@@ -177,9 +177,9 @@ namespace Knockdown
             if (player == null || player.life == null || player.life.isDead)
                 return;
 
-            // Heal UP to ReviveHealth; never reduce a player who bled below it.
-            if (player.life.health < cfg.ReviveHealth)
-                player.life.serverModifyHealth(cfg.ReviveHealth - player.life.health);
+            // Revived players always come back at exactly ReviveHealth, regardless of
+            // how much HP they had left when revived.
+            player.life.serverModifyHealth(cfg.ReviveHealth - player.life.health);
             player.life.askHeal(0, true, true);
 
             TriggerEffect(cfg.ReviveEffectID, player.transform.position);
