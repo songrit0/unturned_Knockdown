@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Knockdown plugin metadata.
+
+  NOTE: RocketMod does NOT require this file to load the plugin (it loads the
+  compiled Knockdown.dll). RocketMod auto-generates its real config file,
+  Knockdown.configuration.xml, from KnockdownConfiguration.cs on first run.
+  This plugin.xml is provided as a human-readable manifest as requested.
+-->
+<Plugin name="Knockdown">
+  <Version>1.0.0</Version>
+  <Author>imaximum.tech</Author>
+  <Description>Down-but-not-out / revive system. When a player would die they are downed for a timer; nearby players hold the plugin key (F) to revive.</Description>
+  <Target>
+    <Unturned>3.26.3.2</Unturned>
+    <RocketMod>4.9.3.18</RocketMod>
+  </Target>
+  <Commands>
+    <Command name="knockdownreload" aliases="kdreload" permission="knockdown.reload">Reload configuration</Command>
+  </Commands>
+</Plugin>

@@ -1,0 +1,12 @@
+# Build output
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Rocket runtime files (generated on the server, not source)
+*.configuration.xml
+*.translation.xml
