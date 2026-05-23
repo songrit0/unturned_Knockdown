@@ -302,13 +302,13 @@ namespace Knockdown
                     if (player.equipment.HasValidUseable)
                         player.equipment.dequip();
 
-                    if (!beingRevived && !string.IsNullOrEmpty(cfg.MessageDownedHp))
+                    if (!beingRevived && HasText(cfg.MessageDownedHp))
                     {
                         int secondsLeft = Mathf.Max(0, Mathf.CeilToInt(total - state.Elapsed));
-                        string hpText = cfg.MessageDownedHp
+                        string hpText = cfg.MessageDownedHp.Text
                             .Replace("{hp}", player.life.health.ToString())
                             .Replace("{seconds}", secondsLeft.ToString());
-                        Msg(player, hpText);
+                        Msg(player, cfg.MessageDownedHp, hpText);
                     }
                 }
 
@@ -372,17 +372,20 @@ namespace Knockdown
             {
                 state.ProgressTickAccumulator -= 1f;
 
-                int secondsLeft = Mathf.CeilToInt(cfg.ReviveDuration - state.ReviveProgress);
-                int total = Mathf.RoundToInt(cfg.ReviveDuration);
-                int percent = Mathf.Clamp(Mathf.RoundToInt(state.ReviveProgress / cfg.ReviveDuration * 100f), 0, 100);
+                if (HasText(cfg.MessageReviveProgress))
+                {
+                    int secondsLeft = Mathf.CeilToInt(cfg.ReviveDuration - state.ReviveProgress);
+                    int total = Mathf.RoundToInt(cfg.ReviveDuration);
+                    int percent = Mathf.Clamp(Mathf.RoundToInt(state.ReviveProgress / cfg.ReviveDuration * 100f), 0, 100);
 
-                string text = (cfg.MessageReviveProgress ?? string.Empty)
-                    .Replace("{seconds}", secondsLeft.ToString())
-                    .Replace("{total}", total.ToString())
-                    .Replace("{percent}", percent.ToString());
+                    string text = cfg.MessageReviveProgress.Text
+                        .Replace("{seconds}", secondsLeft.ToString())
+                        .Replace("{total}", total.ToString())
+                        .Replace("{percent}", percent.ToString());
 
-                Msg(reviver, text);
-                Msg(target, text);
+                    Msg(reviver, cfg.MessageReviveProgress, text);
+                    Msg(target, cfg.MessageReviveProgress, text);
+                }
 
                 if (cfg.ReviveSoundEffectID != 0)
                     TriggerEffect(cfg.ReviveSoundEffectID, target.transform.position);
@@ -487,11 +490,34 @@ namespace Knockdown
             EffectManager.triggerEffect(parameters);
         }
 
-        private static void Msg(Player player, string text)
+        private static bool HasText(Message msg)
         {
-            if (player == null || string.IsNullOrEmpty(text))
+            return msg != null && !string.IsNullOrEmpty(msg.Text);
+        }
+
+        /// <summary>Sends a configured message (uses its Text and Color).</summary>
+        private static void Msg(Player player, Message msg)
+        {
+            if (HasText(msg))
+                Msg(player, msg, msg.Text);
+        }
+
+        /// <summary>Sends a message using <paramref name="text"/> but the colour from <paramref name="msg"/>.</summary>
+        private static void Msg(Player player, Message msg, string text)
+        {
+            if (player == null || msg == null || string.IsNullOrEmpty(text))
                 return;
-            UnturnedChat.Say(UnturnedPlayer.FromPlayer(player), text, Color.yellow);
+            Color color = UnturnedChat.GetColorFromName(msg.Color, Color.white);
+            // serverSendMessage with useRichTextFormatting:true so inline TMP
+            // tags (<color=...>, <b>, <size=...>) in Text render per-segment.
+            // The msg.Color above is the base/fallback colour for untagged text.
+            ChatManager.serverSendMessage(
+                text, color,
+                fromPlayer: null,
+                toPlayer: player.channel.owner,
+                mode: EChatMode.SAY,
+                iconURL: null,
+                useRichTextFormatting: true);
         }
 
         /// <summary>Mutable per-player downed record.</summary>

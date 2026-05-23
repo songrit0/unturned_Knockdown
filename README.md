@@ -14,6 +14,23 @@ Down-but-not-out / revive system.
 
 ---
 
+## ⬇️ Download (server owners)
+
+You do **not** need to build anything — a ready-to-use compiled DLL is included in this repo.
+
+**[➡️ Download `Knockdown.dll`](https://github.com/songrit0/unturned_Knockdown/raw/main/dist/Knockdown.dll)**
+
+Then drop it on your server:
+
+```
+<server>/Rocket/Plugins/Knockdown/Knockdown.dll
+```
+
+Start the server once (RocketMod generates `Knockdown.configuration.xml`), edit the config, then `/knockdownreload`.
+Full steps are in [Installation](#installation) below. Players install nothing — it's 100% server-side.
+
+---
+
 ## Files
 
 | File | Purpose |
@@ -152,11 +169,13 @@ Auto-generated example with defaults:
   <RevivePluginKeyIndex>0</RevivePluginKeyIndex>
   <InvincibleWhileDowned>false</InvincibleWhileDowned>
   <PauseDrainWhileReviving>true</PauseDrainWhileReviving>
-  <MessageKnocked>You are downed! Hold on - a teammate can revive you by holding F.</MessageKnocked>
-  <MessageRevived>You have been revived.</MessageRevived>
-  <MessageBeingRevived>A teammate is reviving you...</MessageBeingRevived>
-  <MessageReviveCancelled>Revive cancelled.</MessageReviveCancelled>
-  <MessageReviveStarted>Reviving... keep holding F and stay close.</MessageReviveStarted>
+  <MessageKnocked Text="If knocked down, wait for a teammate to revive you" Color="white" />
+  <MessageRevived Text="You have been revived" Color="green" />
+  <MessageBeingRevived Text="A teammate is reviving you" Color="green" />
+  <MessageReviveCancelled Text="Revive cancelled" Color="red" />
+  <MessageReviveStarted Text="Reviving... stay crouched and close" Color="yellow" />
+  <MessageReviveProgress Text="Reviving... {seconds}s left ({percent}%)" Color="yellow" />
+  <MessageDownedHp Text="Bleeding out... HP {hp} ({seconds}s left)" Color="red" />
 </KnockdownConfiguration>
 ```
 
@@ -179,6 +198,26 @@ Auto-generated example with defaults:
 | `PauseDrainWhileReviving` | true | `true` = HP bleed-out + timer pause while a revive is in progress (can't bleed out mid-revive) |
 | `MessageReviveProgress` | — | Shown each second while reviving. Placeholders: `{seconds}`, `{total}`, `{percent}` |
 | `MessageDownedHp` | — | Shown each second to the downed player while bleeding. Placeholders: `{hp}`, `{seconds}` |
+
+### Message colours
+
+Every message has a `Text` and a `Color` attribute:
+
+```xml
+<MessageRevived Text="You have been revived" Color="green" />
+```
+
+`Color` accepts a colour **name** (`white`, `red`, `green`, `yellow`, `cyan`, `blue`, …) or a **hex** value (`#00FF7F`).
+An unknown value falls back to white.
+
+**Multiple colours in one message** — wrap parts of `Text` in TMP rich-text tags (escape `<`/`>` as `&lt;`/`&gt;` in XML);
+the `Color` attribute is just the base colour for untagged text:
+
+```xml
+<MessageRevived Text="&lt;color=#00FF7F&gt;You have been revived&lt;/color&gt; &lt;color=yellow&gt;+50 HP&lt;/color&gt;" Color="white" />
+```
+
+Supported tags include `<color=…>`, `<b>`, `<i>`, `<size=…>`. After editing, run `/knockdownreload`.
 
 ---
 

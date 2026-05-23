@@ -1,7 +1,30 @@
+using System.Xml.Serialization;
 using Rocket.API;
 
 namespace Knockdown
 {
+    /// <summary>
+    /// A chat message with a configurable colour. Serializes as:
+    /// <c>&lt;FieldName Text="..." Color="white" /&gt;</c>
+    /// Color accepts names (white, red, green, yellow, ...) or hex (#RRGGBB).
+    /// </summary>
+    public sealed class Message
+    {
+        [XmlAttribute]
+        public string Text;
+
+        [XmlAttribute]
+        public string Color;
+
+        public Message() { }
+
+        public Message(string text, string color)
+        {
+            Text = text;
+            Color = color;
+        }
+    }
+
     /// <summary>
     /// Configuration for the Knockdown plugin. RocketMod serializes the public
     /// fields below to/from <c>Plugins/Knockdown/Knockdown.configuration.xml</c>.
@@ -81,24 +104,24 @@ namespace Knockdown
         /// </summary>
         public bool PauseDrainWhileReviving;
 
-        // --- Player-facing messages ---
-        public string MessageKnocked;
-        public string MessageRevived;
-        public string MessageBeingRevived;
-        public string MessageReviveCancelled;
-        public string MessageReviveStarted;
+        // --- Player-facing messages (Text + Color attributes) ---
+        public Message MessageKnocked;
+        public Message MessageRevived;
+        public Message MessageBeingRevived;
+        public Message MessageReviveCancelled;
+        public Message MessageReviveStarted;
 
         /// <summary>
         /// Shown once per second to both reviver and downed player while reviving.
         /// Placeholders: {seconds} = seconds left, {total} = total seconds, {percent} = progress %.
         /// </summary>
-        public string MessageReviveProgress;
+        public Message MessageReviveProgress;
 
         /// <summary>
         /// Shown once per second to the downed player while bleeding out (not while being revived).
         /// Placeholders: {hp} = current health, {seconds} = seconds left before death.
         /// </summary>
-        public string MessageDownedHp;
+        public Message MessageDownedHp;
 
         public void LoadDefaults()
         {
@@ -119,13 +142,20 @@ namespace Knockdown
             InvincibleWhileDowned = false;
             PauseDrainWhileReviving = true;
 
-            MessageKnocked = "You are downed! A teammate can revive you by crouching next to you.";
-            MessageRevived = "You have been revived.";
-            MessageBeingRevived = "A teammate is reviving you...";
-            MessageReviveCancelled = "Revive cancelled.";
-            MessageReviveStarted = "Reviving... stay crouched and close.";
-            MessageReviveProgress = "Reviving... {seconds}s left ({percent}%)";
-            MessageDownedHp = "Bleeding out... HP {hp} ({seconds}s left)";
+            MessageKnocked = new Message(
+                "If knocked down, wait for a teammate to revive you | ถ้าล้มให้รอเพื่อนชุบชีวิต", "white");
+            MessageRevived = new Message(
+                "You have been revived | คุณถูกชุบชีวิตแล้ว", "green");
+            MessageBeingRevived = new Message(
+                "A teammate is reviving you | เพื่อนกำลังชุบชีวิตคุณ", "green");
+            MessageReviveCancelled = new Message(
+                "Revive cancelled | ยกเลิกการชุบชีวิต", "red");
+            MessageReviveStarted = new Message(
+                "Reviving... stay crouched and close | กำลังชุบ... ย่อค้างไว้และอยู่ใกล้ๆ", "yellow");
+            MessageReviveProgress = new Message(
+                "Reviving... {seconds}s left ({percent}%) | กำลังชุบ... เหลือ {seconds} วิ ({percent}%)", "yellow");
+            MessageDownedHp = new Message(
+                "Bleeding out... HP {hp} ({seconds}s left) | เลือดไหล... HP {hp} (เหลือ {seconds} วิ)", "red");
         }
     }
 }
