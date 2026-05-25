@@ -351,6 +351,7 @@ namespace Knockdown
                         reviver = candidate;
                         Msg(reviver, cfg.MessageReviveStarted);
                         Msg(target, cfg.MessageBeingRevived);
+                        SendReviverGesture(reviver, cfg);
                         break;
                     }
                 }
@@ -389,7 +390,23 @@ namespace Knockdown
 
                 if (cfg.ReviveSoundEffectID != 0)
                     TriggerEffect(cfg.ReviveSoundEffectID, target.transform.position);
+
+                // Re-play the gesture each second so the reviver keeps pointing for the
+                // whole channel (POINT is a one-shot animation).
+                SendReviverGesture(reviver, cfg);
             }
+        }
+
+        /// <summary>Plays the configured gesture on the reviver (e.g. POINT at the downed player).</summary>
+        private static void SendReviverGesture(Player reviver, KnockdownConfiguration cfg)
+        {
+            if (reviver?.animator == null)
+                return;
+            string name = (cfg.ReviverGesture ?? "POINT").Trim();
+            if (name.Length == 0 || name.ToUpperInvariant() == "NONE")
+                return;
+            if (System.Enum.TryParse(name, true, out EPlayerGesture gesture))
+                reviver.animator.sendGesture(gesture, true);
         }
 
         private bool IsEligibleReviver(Player reviver, Player target, Vector3 targetPos, KnockdownConfiguration cfg)

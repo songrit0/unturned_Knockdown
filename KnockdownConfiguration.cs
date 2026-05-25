@@ -104,6 +104,13 @@ namespace Knockdown
         /// </summary>
         public bool PauseDrainWhileReviving;
 
+        /// <summary>
+        /// Gesture the reviver's character plays while reviving (visual flavour), e.g. they
+        /// point at the downed teammate. Any EPlayerGesture name: POINT (default), WAVE,
+        /// SALUTE, FACEPALM, ... Set to "NONE" to disable.
+        /// </summary>
+        public string ReviverGesture;
+
         // --- Player-facing messages (Text + Color attributes) ---
         public Message MessageKnocked;
         public Message MessageRevived;
@@ -141,6 +148,7 @@ namespace Knockdown
             RevivePluginKeyIndex = 0;
             InvincibleWhileDowned = false;
             PauseDrainWhileReviving = true;
+            ReviverGesture = "POINT";
 
             MessageKnocked = new Message(
                 "If knocked down, wait for a teammate to revive you | ถ้าล้มให้รอเพื่อนชุบชีวิต", "white");
