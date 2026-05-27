@@ -38,6 +38,7 @@ Full steps are in [Installation](#installation) below. Players install nothing �
 | `Knockdown.cs` | Main plugin: damage interception, downed state, timer, revive channel, cleanup |
 | `KnockdownConfiguration.cs` | Config model (auto-serialized by RocketMod) |
 | `CommandKnockdownReload.cs` | `/knockdownreload` admin command |
+| `CommandKnockMe.cs` | `/knockme` test command — forces the caller into knockdown |
 | `plugin.xml` | Human-readable metadata manifest |
 | `Knockdown.csproj` | SDK-style build project (needs the .NET SDK; see notes) |
 
@@ -71,13 +72,27 @@ All logic runs on the Unity main thread, so simultaneous revives / multiple down
 
 ## Revive input
 
-Default (`ReviveInput = "CROUCH"`): a reviver simply **holds crouch (ย่อ) next to the downed player** for
-`ReviveDuration` seconds. Crouch is a stance that Unturned syncs to the server, so this needs **no key binding** and
-has no F-key issues.
+There are three modes you can set on `ReviveInput`:
 
-Optional (`ReviveInput = "PLUGINKEY"`): use Unturned's **Plugin Key** system instead. Each reviver must bind it once
-(`Options → Controls → "Plugin Key 1"`). `RevivePluginKeyIndex` is **0-based** (`0` = "Plugin Key 1"). Note: the server
-cannot read a raw F press, so F only works through this Plugin Key binding.
+| Mode | How it feels in-game |
+|---|---|
+| `CROUCH` (default) | Hold crouch (ย่อ) next to the downed player for the entire `ReviveDuration`. Stand up = revive cancels. |
+| `CROUCH_START` | Press crouch **once** near the downed player to start; afterwards you can stand up and walk around freely — the revive only cancels if you leave `ReviveDistance`. |
+| `PLUGINKEY` | Hold a bound Unturned **Plugin Key** (`Options → Controls → "Plugin Key 1"`). `RevivePluginKeyIndex` is **0-based** (`0` = "Plugin Key 1"). |
+
+Crouch-based modes are fully server-side and need no key binding. The server can't read a raw F press, so F only works
+through the Plugin Key binding.
+
+## Visual feedback
+
+The plugin can show two purely-cosmetic effects so teammates can spot a downed player:
+
+- **Range ring** (`RangeEffect*`) — a horizontal ring of effect points drawn on the ground around the downed player,
+  matching the revive distance. Continuously visible from the moment the player is downed until they recover or die.
+- **Sky flare** (`KnockFlare*`) — a signal-flare effect that rises from the downed player into the sky in a vertical
+  column, then "hangs" at the peak (optionally as a ring) so distant teammates can see the location from far away.
+
+Both default ON. Set their `…EffectID` to `0` to disable independently.
 
 ---
 
@@ -163,12 +178,27 @@ Auto-generated example with defaults:
   <KnockEffectID>61</KnockEffectID>
   <ReviveEffectID>61</ReviveEffectID>
   <ReviveSoundEffectID>56</ReviveSoundEffectID>
+  <RangeEffectID>130</RangeEffectID>
+  <RangeEffectInterval>0.5</RangeEffectInterval>
+  <RangeEffectPoints>16</RangeEffectPoints>
+  <RangeEffectYOffset>-0.5</RangeEffectYOffset>
+  <KnockFlareEffectID>125</KnockFlareEffectID>
+  <KnockFlareHeight>50</KnockFlareHeight>
+  <KnockFlareDuration>1.5</KnockFlareDuration>
+  <KnockFlareSteps>10</KnockFlareSteps>
+  <KnockFlareHangDuration>5</KnockFlareHangDuration>
+  <KnockFlareHangInterval>0.3</KnockFlareHangInterval>
+  <KnockFlareHangRingRadius>6</KnockFlareHangRingRadius>
+  <KnockFlareHangRingPoints>8</KnockFlareHangRingPoints>
   <ReviveDistance>4</ReviveDistance>
   <ReviveInput>CROUCH</ReviveInput>
   <DownedPose>SIT</DownedPose>
   <RevivePluginKeyIndex>0</RevivePluginKeyIndex>
   <InvincibleWhileDowned>false</InvincibleWhileDowned>
   <PauseDrainWhileReviving>true</PauseDrainWhileReviving>
+  <ReviverGesture>POINT</ReviverGesture>
+  <DownedHpMessageInterval>5</DownedHpMessageInterval>
+  <ReviveProgressMessageInterval>2</ReviveProgressMessageInterval>
   <MessageKnocked Text="If knocked down, wait for a teammate to revive you" Color="white" />
   <MessageRevived Text="You have been revived" Color="green" />
   <MessageBeingRevived Text="A teammate is reviving you" Color="green" />
@@ -179,6 +209,8 @@ Auto-generated example with defaults:
 </KnockdownConfiguration>
 ```
 
+### Core gameplay
+
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `KnockDuration` | 60 | Total downed lifetime in seconds (HP reaches 0 at the end) |
@@ -186,18 +218,78 @@ Auto-generated example with defaults:
 | `ReviveHealth` | 25 | HP restored on revive (0–100) |
 | `KnockHealth` | 100 | Starting HP when downed; drains toward 0 over time (0–100) |
 | `InvincibleDuration` | 3 | Grace seconds at start: immune + HP held before draining begins |
-| `CrawlSpeed` | 0.25 | Movement multiplier while downed (1.0 = normal) |
-| `KnockEffectID` | 61 | Effect asset id on knockdown |
-| `ReviveEffectID` | 61 | Effect asset id on revive |
-| `ReviveSoundEffectID` | 56 | Sound effect played once/sec while reviving (vanilla "Beep"; 0 = off) |
-| `ReviveDistance` | 4 | Max metres between reviver and downed player |
-| `ReviveInput` | CROUCH | `CROUCH` = hold crouch near them (no binding); `PLUGINKEY` = hold a bound plugin key |
+| `CrawlSpeed` | 0.25 | Movement multiplier while downed (1.0 = normal). Note: high values may be capped by the forced pose — pair with `DownedPose = CROUCH` if you want noticeably-faster downed movement. |
+| `ReviveDistance` | 4 | Max metres between reviver and downed player. Also the radius of the range ring. |
+| `ReviveInput` | CROUCH | `CROUCH`, `CROUCH_START`, or `PLUGINKEY` — see [Revive input](#revive-input). |
 | `DownedPose` | SIT | Downed pose: `SIT`/`REST`, `CROUCH`, or `PRONE` |
 | `RevivePluginKeyIndex` | 0 | 0-based plugin key slot, used only when `ReviveInput = PLUGINKEY` |
-| `InvincibleWhileDowned` | false | Behaviour after grace: `true` = stay immune (only HP drain kills); `false` = combat damage can finish them early |
-| `PauseDrainWhileReviving` | true | `true` = HP bleed-out + timer pause while a revive is in progress (can't bleed out mid-revive) |
-| `MessageReviveProgress` | — | Shown each second while reviving. Placeholders: `{seconds}`, `{total}`, `{percent}` |
-| `MessageDownedHp` | — | Shown each second to the downed player while bleeding. Placeholders: `{hp}`, `{seconds}` |
+| `InvincibleWhileDowned` | false | After grace: `true` = stay immune (only HP drain kills); `false` = combat damage can finish them early |
+| `PauseDrainWhileReviving` | true | `true` = HP bleed-out + timer pause while a revive is in progress |
+| `ReviverGesture` | POINT | Gesture the reviver plays while channeling. Any `EPlayerGesture` (`POINT`, `WAVE`, `SALUTE`, `FACEPALM`, …) or `NONE`. |
+
+### One-shot effects
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `KnockEffectID` | 61 | Effect asset id played once on knockdown |
+| `ReviveEffectID` | 61 | Effect asset id played once on revive |
+| `ReviveSoundEffectID` | 56 | Sound effect played once/sec while reviving (vanilla "Beep"; 0 = off) |
+
+### Range ring (around the downed player)
+
+A horizontal ring of effect points drawn at the downed player's feet, continuously, so teammates can see the revive area.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `RangeEffectID` | 130 | Effect asset id for ring points. `0` = disable the ring. |
+| `RangeEffectInterval` | 0.5 | Seconds between ring bursts (smaller = smoother, more network traffic) |
+| `RangeEffectPoints` | 16 | Number of points distributed around the circle |
+| `RangeEffectYOffset` | -0.5 | Vertical offset relative to the player; negative sinks the ring closer to the ground |
+
+Radius = `ReviveDistance` (so the ring always matches the actual revive range).
+
+### Sky flare (vertical signal pillar)
+
+When a player is knocked, a column of effects rises from them into the sky, then hangs at the peak.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `KnockFlareEffectID` | 125 | Effect asset id for the flare. `0` = disable the entire flare animation. |
+| `KnockFlareHeight` | 50 | Peak height in metres above the downed player |
+| `KnockFlareDuration` | 1.5 | Seconds for the flare to travel from ground to peak |
+| `KnockFlareSteps` | 10 | Effect points spawned along the trajectory (more = smoother trail) |
+| `KnockFlareHangDuration` | 5 | After reaching the peak, keep re-triggering at the top for this many seconds. `0` = no hang. |
+| `KnockFlareHangInterval` | 0.3 | Seconds between re-triggers while hanging |
+| `KnockFlareHangRingRadius` | 6 | If `> 0`, the hang phase draws a horizontal ring of this radius at the peak instead of a single point |
+| `KnockFlareHangRingPoints` | 8 | Number of effect points around the hang ring (only used when `KnockFlareHangRingRadius > 0`) |
+
+### Chat message cadence
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `DownedHpMessageInterval` | 5 | Seconds between `MessageDownedHp` repeats to the downed player. Larger = less spam. |
+| `ReviveProgressMessageInterval` | 2 | Seconds between `MessageReviveProgress` repeats to reviver + downed player |
+
+`MessageReviveProgress` placeholders: `{seconds}`, `{total}`, `{percent}`.
+`MessageDownedHp` placeholders: `{hp}`, `{seconds}`.
+
+**Disable any message** by setting its `Text=""` (the plugin skips empty messages entirely).
+
+### Effect ids
+
+Effects (`KnockEffectID`, `RangeEffectID`, `KnockFlareEffectID`, etc.) are Unturned **EffectAsset** ids. A few commonly-used vanilla ids:
+
+| id | What it is |
+|---|---|
+| 17 | Smoke |
+| 56 | "Beep" sound |
+| 61 | Generic small explosion |
+| 125 | Signal flare |
+| 128 | Generic ground puff (used elsewhere as a "stored" cue) |
+| 130 | Used as the default range-ring marker |
+| 142 / 143 / 144 / 145 | Green / blue / red / yellow flares |
+
+Always verify on your own server (asset ids can shift between Unturned versions); the plugin logs a warning and skips if an id isn't an `EffectAsset`.
 
 ### Message colours
 
@@ -226,8 +318,33 @@ Supported tags include `<color=…>`, `<b>`, `<i>`, `<size=…>`. After editing,
 | Command | Alias | Permission | Description |
 |---------|-------|------------|-------------|
 | `/knockdownreload` | `/kdreload` | `knockdown.reload` | Reload the configuration from disk |
+| `/knockme` | `/testknock` | `knockdown.test` | Force yourself into knockdown immediately, bypassing the damage pipeline. Useful for testing the full visual (range ring, sky flare, downed pose, revive flow) without dying. |
+
+Grant in `Rocket/Permissions.config.xml`:
+
+```xml
+<Permission Cooldown="0">knockdown.reload</Permission>
+<Permission Cooldown="0">knockdown.test</Permission>
+```
+
+Admins with `*` already have both.
 
 ---
+
+## Upgrading from an older config
+
+RocketMod does **not** retro-fill missing fields when a `Knockdown.configuration.xml` already exists on disk — they
+deserialize to the C# default (`0` for numeric / `null` for strings), **not** to the values in `LoadDefaults()`.
+
+When you upgrade to a build that adds new fields, either:
+
+- **Edit `Knockdown.configuration.xml`** and add the new entries manually (using the values from the table above as a
+  starting point), then `/knockdownreload`; or
+- **Delete the file** and let RocketMod regenerate a fresh one with every default populated. Your message text and any
+  hand-tuned numbers will be lost.
+
+For example: after upgrading to a build that introduced `RangeEffectID` / `KnockFlareEffectID`, an old config that
+doesn't list them will produce `0` values (i.e. ring + flare silently disabled). Add the entries and reload.
 
 ## Implementation notes & known trade-offs
 
@@ -237,5 +354,12 @@ Supported tags include `<color=…>`, `<b>`, `<i>`, `<size=…>`. After editing,
 - **Prone is best-effort.** Stance is client-authoritative, so `checkStance(PRONE)` is re-asserted once per second but may
   not always stick visually. Movement restriction (crawl) and combat lockout are fully enforced server-side.
 - **Effect ids must exist** as EFFECT assets on the server, otherwise a warning is logged and the effect is skipped.
+- **Network traffic from visuals.** Each ring point and each flare step is a separate effect packet. The defaults
+  (16-point ring at 0.5s + 8-point hang ring at 0.3s + 10-step rise) are tuned for a handful of simultaneously-downed
+  players. Servers with many concurrent downs can lower `RangeEffectPoints`, raise `RangeEffectInterval`, or shorten
+  `KnockFlareHangDuration` to reduce broadcasts.
+- **`/knockme` bypasses the damage path** by calling `ForceKnockdown` directly. This avoids interference from armour,
+  god-mode plugins, or other damage-event subscribers — so it's a faithful test of the downed-state visuals and revive
+  flow, but it does **not** validate the damage-interception code path. To test that, take damage normally instead.
 - Compiled artifact from the verification build is in `bin\Knockdown.dll` (built with the framework Roslyn compiler);
   prefer rebuilding via Visual Studio for distribution.
