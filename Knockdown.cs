@@ -28,6 +28,9 @@ namespace Knockdown
         /// <summary>Reused scratch buffer so FixedUpdate allocates nothing per tick.</summary>
         private readonly List<DownedState> _scratch = new List<DownedState>();
 
+        /// <summary>Active "flare rising into the sky" animations, one queued per knockdown.</summary>
+        private readonly List<FlareAnim> _flares = new List<FlareAnim>();
+
         // -----------------------------------------------------------------
         //  Plugin lifecycle
         // -----------------------------------------------------------------
@@ -56,6 +59,7 @@ namespace Knockdown
                 Teardown(state);
             _downed.Clear();
             _scratch.Clear();
+            _flares.Clear();
 
             Instance = null;
             Logger.Log("Knockdown unloaded.");
@@ -115,6 +119,17 @@ namespace Knockdown
         //  Enter / exit knockdown
         // -----------------------------------------------------------------
 
+        /// <summary>Public entry point for test commands: force the player into knockdown immediately.</summary>
+        public void ForceKnockdown(Player player)
+        {
+            if (player == null || player.life == null || player.life.isDead)
+                return;
+            CSteamID id = player.channel.owner.playerID.steamID;
+            if (_downed.ContainsKey(id))
+                return;
+            EnterKnockdown(player, id, EDeathCause.PUNCH, id);
+        }
+
         private void EnterKnockdown(Player player, CSteamID id, EDeathCause cause, CSteamID killer)
         {
             if (_downed.ContainsKey(id))
@@ -147,7 +162,16 @@ namespace Knockdown
             player.equipment.onEquipRequested += OnEquipRequested;
 
             TriggerEffect(cfg.KnockEffectID, player.transform.position);
+            QueueKnockFlare(player.transform.position, cfg);
             Msg(player, cfg.MessageKnocked);
+        }
+
+        /// <summary>Schedules a flare-into-the-sky animation from <paramref name="origin"/> using current config.</summary>
+        private void QueueKnockFlare(Vector3 origin, KnockdownConfiguration cfg)
+        {
+            if (cfg.KnockFlareEffectID == 0 || cfg.KnockFlareSteps <= 0 || cfg.KnockFlareDuration <= 0f || cfg.KnockFlareHeight <= 0f)
+                return;
+            _flares.Add(new FlareAnim { Start = origin, Elapsed = 0f, LastStep = -1 });
         }
 
         /// <summary>Restores movement and removes the equip block. Does not touch the dictionary.</summary>
@@ -242,11 +266,15 @@ namespace Knockdown
 
         private void FixedUpdate()
         {
-            if (_downed.Count == 0)
-                return;
-
             float dt = Time.fixedDeltaTime;
             KnockdownConfiguration cfg = Configuration.Instance;
+
+            // Tick the "flare into the sky" animations independently of downed players,
+            // so they keep playing even if the player who triggered them is revived/killed.
+            TickFlares(dt, cfg);
+
+            if (_downed.Count == 0)
+                return;
 
             _scratch.Clear();
             _scratch.AddRange(_downed.Values);
@@ -292,8 +320,8 @@ namespace Knockdown
                         player.life.serverModifyHealth(targetHp - current);
                 }
 
-                // Once a second: re-assert crawl speed / pose, and show the downed player
-                // their bleeding HP (skipped while being revived - the revive message shows instead).
+                // Once a second: re-assert crawl speed / pose (must stay short to fight back
+                // against player-controlled stance changes promptly).
                 state.ReapplyAccumulator += dt;
                 if (state.ReapplyAccumulator >= 1f)
                 {
@@ -301,14 +329,35 @@ namespace Knockdown
                     ApplyDownedConstraints(player, cfg);
                     if (player.equipment.HasValidUseable)
                         player.equipment.dequip();
+                }
 
-                    if (!beingRevived && HasText(cfg.MessageDownedHp))
+                // HP-bleeding chat message runs on its own (configurable) interval so it
+                // doesn't spam every second. Skipped while being revived — revive message shows instead.
+                state.HpMessageAccumulator += dt;
+                float hpInterval = cfg.DownedHpMessageInterval > 0f ? cfg.DownedHpMessageInterval : 5f;
+                if (!beingRevived && state.HpMessageAccumulator >= hpInterval)
+                {
+                    state.HpMessageAccumulator = 0f;
+                    if (HasText(cfg.MessageDownedHp))
                     {
                         int secondsLeft = Mathf.Max(0, Mathf.CeilToInt(total - state.Elapsed));
                         string hpText = cfg.MessageDownedHp.Text
                             .Replace("{hp}", player.life.health.ToString())
                             .Replace("{seconds}", secondsLeft.ToString());
                         Msg(player, cfg.MessageDownedHp, hpText);
+                    }
+                }
+
+                // Optional: draw a ring of effect points around the downed player to visualise revive range.
+                if (cfg.RangeEffectID != 0 && cfg.RangeEffectPoints > 0)
+                {
+                    state.RangeEffectAccumulator += dt;
+                    float interval = cfg.RangeEffectInterval > 0f ? cfg.RangeEffectInterval : 0.5f;
+                    if (state.RangeEffectAccumulator >= interval)
+                    {
+                        state.RangeEffectAccumulator = 0f;
+                        Vector3 ringCenter = player.transform.position + new Vector3(0f, cfg.RangeEffectYOffset, 0f);
+                        TriggerRingEffect(cfg.RangeEffectID, ringCenter, cfg.ReviveDistance, cfg.RangeEffectPoints);
                     }
                 }
 
@@ -321,11 +370,13 @@ namespace Knockdown
             Vector3 targetPos = target.transform.position;
 
             // Is the currently-claimed reviver still valid?
+            // Re-validation passes initialClaim=false so CROUCH_START doesn't require the
+            // reviver to keep crouching after they started the channel.
             Player reviver = null;
             if (state.ReviverId != CSteamID.Nil)
             {
                 Player current = PlayerTool.getPlayer(state.ReviverId);
-                if (IsEligibleReviver(current, target, targetPos, cfg))
+                if (IsEligibleReviver(current, target, targetPos, cfg, initialClaim: false))
                     reviver = current;
             }
 
@@ -338,16 +389,18 @@ namespace Knockdown
                     state.ReviverId = CSteamID.Nil;
                     state.ReviveProgress = 0f;
                     state.ProgressTickAccumulator = 0f;
+                    state.ProgressMessageAccumulator = 0f;
                 }
 
                 foreach (SteamPlayer client in Provider.clients)
                 {
                     Player candidate = client.player;
-                    if (IsEligibleReviver(candidate, target, targetPos, cfg))
+                    if (IsEligibleReviver(candidate, target, targetPos, cfg, initialClaim: true))
                     {
                         state.ReviverId = client.playerID.steamID;
                         state.ReviveProgress = 0f;
                         state.ProgressTickAccumulator = 0f;
+                    state.ProgressMessageAccumulator = 0f;
                         reviver = candidate;
                         Msg(reviver, cfg.MessageReviveStarted);
                         Msg(target, cfg.MessageBeingRevived);
@@ -367,27 +420,35 @@ namespace Knockdown
                 return;
             }
 
-            // Once-a-second progress feedback in chat + revive sound effect.
+            // Progress feedback + revive sound. The sound stays on a 1s tick (gameplay cue);
+            // the chat message uses its own configurable interval to avoid spam.
             state.ProgressTickAccumulator += dt;
-            if (state.ProgressTickAccumulator >= 1f)
-            {
+            state.ProgressMessageAccumulator += dt;
+            float progressMsgInterval = cfg.ReviveProgressMessageInterval > 0f ? cfg.ReviveProgressMessageInterval : 2f;
+            bool soundTick = state.ProgressTickAccumulator >= 1f;
+            bool messageTick = state.ProgressMessageAccumulator >= progressMsgInterval;
+            if (soundTick)
                 state.ProgressTickAccumulator -= 1f;
+            if (messageTick)
+                state.ProgressMessageAccumulator = 0f;
 
-                if (HasText(cfg.MessageReviveProgress))
-                {
-                    int secondsLeft = Mathf.CeilToInt(cfg.ReviveDuration - state.ReviveProgress);
-                    int total = Mathf.RoundToInt(cfg.ReviveDuration);
-                    int percent = Mathf.Clamp(Mathf.RoundToInt(state.ReviveProgress / cfg.ReviveDuration * 100f), 0, 100);
+            if (messageTick && HasText(cfg.MessageReviveProgress))
+            {
+                int secondsLeft = Mathf.CeilToInt(cfg.ReviveDuration - state.ReviveProgress);
+                int total = Mathf.RoundToInt(cfg.ReviveDuration);
+                int percent = Mathf.Clamp(Mathf.RoundToInt(state.ReviveProgress / cfg.ReviveDuration * 100f), 0, 100);
 
-                    string text = cfg.MessageReviveProgress.Text
-                        .Replace("{seconds}", secondsLeft.ToString())
-                        .Replace("{total}", total.ToString())
-                        .Replace("{percent}", percent.ToString());
+                string text = cfg.MessageReviveProgress.Text
+                    .Replace("{seconds}", secondsLeft.ToString())
+                    .Replace("{total}", total.ToString())
+                    .Replace("{percent}", percent.ToString());
 
-                    Msg(reviver, cfg.MessageReviveProgress, text);
-                    Msg(target, cfg.MessageReviveProgress, text);
-                }
+                Msg(reviver, cfg.MessageReviveProgress, text);
+                Msg(target, cfg.MessageReviveProgress, text);
+            }
 
+            if (soundTick)
+            {
                 if (cfg.ReviveSoundEffectID != 0)
                     TriggerEffect(cfg.ReviveSoundEffectID, target.transform.position);
 
@@ -409,7 +470,7 @@ namespace Knockdown
                 reviver.animator.sendGesture(gesture, true);
         }
 
-        private bool IsEligibleReviver(Player reviver, Player target, Vector3 targetPos, KnockdownConfiguration cfg)
+        private bool IsEligibleReviver(Player reviver, Player target, Vector3 targetPos, KnockdownConfiguration cfg, bool initialClaim)
         {
             if (reviver == null || reviver == target)
                 return false;
@@ -419,20 +480,30 @@ namespace Knockdown
                 return false; // a downed player cannot revive
             if ((reviver.transform.position - targetPos).sqrMagnitude > cfg.ReviveDistance * cfg.ReviveDistance)
                 return false;
-            return IsReviveInputActive(reviver, cfg);
+            return IsReviveInputActive(reviver, cfg, initialClaim);
         }
 
         /// <summary>
         /// Whether the reviver is performing the revive input. CROUCH (default) is fully
-        /// server-side and needs no key binding; PLUGINKEY uses a bound Unturned plugin key.
+        /// server-side and needs no key binding; PLUGINKEY uses a bound Unturned plugin key;
+        /// CROUCH_START requires crouch only to begin — after that, staying in range is enough.
         /// </summary>
-        private static bool IsReviveInputActive(Player reviver, KnockdownConfiguration cfg)
+        private static bool IsReviveInputActive(Player reviver, KnockdownConfiguration cfg, bool initialClaim)
         {
             string mode = (cfg.ReviveInput ?? "CROUCH").Trim().ToUpperInvariant();
             if (mode == "PLUGINKEY")
                 return reviver.input != null && reviver.input.IsPluginKeyHeld(cfg.RevivePluginKeyIndex);
 
-            // Default: hold crouch (ย่อ) near the downed player.
+            if (mode == "CROUCH_START")
+            {
+                // Only the initial claim needs crouch; while the channel is running
+                // we don't care about stance — the range check in IsEligibleReviver does the gating.
+                if (!initialClaim)
+                    return true;
+                return reviver.stance != null && reviver.stance.stance == EPlayerStance.CROUCH;
+            }
+
+            // Default "CROUCH": hold crouch (ย่อ) continuously near the downed player.
             return reviver.stance != null && reviver.stance.stance == EPlayerStance.CROUCH;
         }
 
@@ -481,6 +552,97 @@ namespace Knockdown
                     return false;
                 default:
                     return true;
+            }
+        }
+
+        /// <summary>
+        /// Advances each queued flare and triggers the effect at the next step(s) it has passed
+        /// since the previous tick. Removes finished flares.
+        /// </summary>
+        private void TickFlares(float dt, KnockdownConfiguration cfg)
+        {
+            if (_flares.Count == 0 || cfg.KnockFlareEffectID == 0)
+                return;
+
+            float riseDuration = cfg.KnockFlareDuration > 0f ? cfg.KnockFlareDuration : 1.5f;
+            int steps = cfg.KnockFlareSteps > 0 ? cfg.KnockFlareSteps : 10;
+            float height = cfg.KnockFlareHeight;
+            float hangDuration = Mathf.Max(0f, cfg.KnockFlareHangDuration);
+            float hangInterval = cfg.KnockFlareHangInterval > 0f ? cfg.KnockFlareHangInterval : 0.3f;
+
+            for (int i = _flares.Count - 1; i >= 0; i--)
+            {
+                FlareAnim f = _flares[i];
+                f.Elapsed += dt;
+
+                // --- Rise phase ---
+                if (f.Elapsed < riseDuration)
+                {
+                    float frac = f.Elapsed / riseDuration;
+                    int reachedStep = Mathf.FloorToInt(frac * steps);
+                    while (f.LastStep < reachedStep && f.LastStep < steps)
+                    {
+                        f.LastStep++;
+                        float t = (float)f.LastStep / steps;
+                        Vector3 pos = f.Start + new Vector3(0f, height * t, 0f);
+                        TriggerEffect(cfg.KnockFlareEffectID, pos);
+                    }
+                    continue;
+                }
+
+                // --- Hang phase: re-trigger at the peak so the flare lingers in the sky.
+                // If a ring radius is configured, emit a ring of points around the peak instead. ---
+                Vector3 peak = f.Start + new Vector3(0f, height, 0f);
+                float ringRadius = cfg.KnockFlareHangRingRadius;
+                int ringPoints = cfg.KnockFlareHangRingPoints;
+                bool useRing = ringRadius > 0f && ringPoints > 0;
+
+                // Ensure the first hang burst fires exactly once when rise just ended.
+                if (f.LastStep < steps)
+                {
+                    f.LastStep = steps;
+                    if (useRing)
+                        TriggerRingEffect(cfg.KnockFlareEffectID, peak, ringRadius, ringPoints);
+                    else
+                        TriggerEffect(cfg.KnockFlareEffectID, peak);
+                }
+
+                f.HangElapsed += dt;
+                f.HangAccumulator += dt;
+                if (f.HangAccumulator >= hangInterval)
+                {
+                    f.HangAccumulator = 0f;
+                    if (useRing)
+                        TriggerRingEffect(cfg.KnockFlareEffectID, peak, ringRadius, ringPoints);
+                    else
+                        TriggerEffect(cfg.KnockFlareEffectID, peak);
+                }
+
+                if (f.HangElapsed >= hangDuration)
+                    _flares.RemoveAt(i);
+            }
+        }
+
+        /// <summary>Emits the same effect at N points evenly distributed around a horizontal ring.</summary>
+        private static void TriggerRingEffect(ushort effectId, Vector3 center, float radius, int points)
+        {
+            EffectAsset asset = Assets.find(EAssetType.EFFECT, effectId) as EffectAsset;
+            if (asset == null)
+                return;
+
+            float twoPi = Mathf.PI * 2f;
+
+            for (int i = 0; i < points; i++)
+            {
+                float a = twoPi * i / points;
+                Vector3 pos = center + new Vector3(radius * Mathf.Cos(a), 0f, radius * Mathf.Sin(a));
+                TriggerEffectParameters parameters = new TriggerEffectParameters(asset)
+                {
+                    position = pos,
+                    relevantDistance = 64f,
+                    reliable = false // decorative; OK to drop on packet loss
+                };
+                EffectManager.triggerEffect(parameters);
             }
         }
 
@@ -549,6 +711,19 @@ namespace Knockdown
             public CSteamID ReviverId;
             public float ReviveProgress;
             public float ProgressTickAccumulator;
+            public float ProgressMessageAccumulator;
+            public float HpMessageAccumulator;
+            public float RangeEffectAccumulator;
+        }
+
+        /// <summary>One active "flare rising into the sky" animation.</summary>
+        private sealed class FlareAnim
+        {
+            public Vector3 Start;
+            public float Elapsed;
+            public int LastStep;
+            public float HangElapsed;
+            public float HangAccumulator;
         }
     }
 }

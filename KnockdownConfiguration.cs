@@ -64,6 +64,57 @@ namespace Knockdown
         /// </summary>
         public ushort ReviveSoundEffectID;
 
+        /// <summary>
+        /// Effect asset id used to draw a "ring" around the downed player showing the
+        /// revive range. Set to 0 to disable the ring. Default: 130.
+        /// </summary>
+        public ushort RangeEffectID;
+
+        /// <summary>Seconds between ring effect bursts. Default: 0.5.</summary>
+        public float RangeEffectInterval;
+
+        /// <summary>Number of effect points distributed around the ring. Default: 16.</summary>
+        public int RangeEffectPoints;
+
+        /// <summary>
+        /// Vertical offset applied to every ring point relative to the downed player's position.
+        /// Negative values sink the ring closer to / below the ground. Default: -0.5.
+        /// </summary>
+        public float RangeEffectYOffset;
+
+        /// <summary>
+        /// Effect asset id "fired into the sky" from the downed player like a signal flare.
+        /// Set to 0 to disable. Default: 125.
+        /// </summary>
+        public ushort KnockFlareEffectID;
+
+        /// <summary>Peak height the flare reaches above the downed player (metres). Default: 50.</summary>
+        public float KnockFlareHeight;
+
+        /// <summary>Seconds the flare takes to travel from ground to peak. Default: 1.5.</summary>
+        public float KnockFlareDuration;
+
+        /// <summary>How many effect points are spawned along the flare trajectory. Default: 10.</summary>
+        public int KnockFlareSteps;
+
+        /// <summary>
+        /// After the flare reaches peak, keep re-triggering the effect at that point for this
+        /// many seconds so it appears to "hang" in the sky. 0 = no hang. Default: 5.
+        /// </summary>
+        public float KnockFlareHangDuration;
+
+        /// <summary>Seconds between re-triggers while the flare is hanging at peak. Default: 0.3.</summary>
+        public float KnockFlareHangInterval;
+
+        /// <summary>
+        /// Radius of the ring drawn at the peak during the hang phase. 0 = single point at peak
+        /// (no ring). Default: 6.
+        /// </summary>
+        public float KnockFlareHangRingRadius;
+
+        /// <summary>Number of effect points around the hang ring. Default: 8.</summary>
+        public int KnockFlareHangRingPoints;
+
         // --- Additional values required for a working server-side implementation ---
 
         /// <summary>Maximum distance (metres) a reviver may be from the downed player.</summary>
@@ -71,8 +122,10 @@ namespace Knockdown
 
         /// <summary>
         /// How a reviver triggers a revive:
-        ///   "CROUCH"    - hold crouch (ย่อ) near the downed player. Fully server-side, no key binding needed (default).
-        ///   "PLUGINKEY" - hold a bound Unturned plugin key (see RevivePluginKeyIndex).
+        ///   "CROUCH"       - hold crouch (ย่อ) near the downed player. Fully server-side, no key binding needed (default).
+        ///   "CROUCH_START" - press crouch ONCE to start; afterwards the reviver may walk/stand freely
+        ///                    and the revive only cancels if they leave ReviveDistance.
+        ///   "PLUGINKEY"    - hold a bound Unturned plugin key (see RevivePluginKeyIndex).
         /// </summary>
         public string ReviveInput;
 
@@ -111,6 +164,18 @@ namespace Knockdown
         /// </summary>
         public string ReviverGesture;
 
+        /// <summary>
+        /// Seconds between MessageDownedHp chat repeats to the downed player. Larger = less spam.
+        /// Default: 5. (Was 1 in older versions.)
+        /// </summary>
+        public float DownedHpMessageInterval;
+
+        /// <summary>
+        /// Seconds between MessageReviveProgress chat repeats to reviver + downed player.
+        /// Default: 2. (Was 1 in older versions.)
+        /// </summary>
+        public float ReviveProgressMessageInterval;
+
         // --- Player-facing messages (Text + Color attributes) ---
         public Message MessageKnocked;
         public Message MessageRevived;
@@ -141,6 +206,18 @@ namespace Knockdown
             KnockEffectID = 61;
             ReviveEffectID = 61;
             ReviveSoundEffectID = 56; // vanilla "Beep"
+            RangeEffectID = 130;      // ring effect enabled by default; set to 0 to disable
+            RangeEffectInterval = 0.5f;
+            RangeEffectPoints = 16;
+            RangeEffectYOffset = -0.5f;
+            KnockFlareEffectID = 125; // signal-flare-into-the-sky on knock; set to 0 to disable
+            KnockFlareHeight = 50f;
+            KnockFlareDuration = 1.5f;
+            KnockFlareSteps = 10;
+            KnockFlareHangDuration = 5f;
+            KnockFlareHangInterval = 0.3f;
+            KnockFlareHangRingRadius = 6f;
+            KnockFlareHangRingPoints = 8;
 
             ReviveDistance = 4f;
             ReviveInput = "CROUCH";
@@ -149,6 +226,8 @@ namespace Knockdown
             InvincibleWhileDowned = false;
             PauseDrainWhileReviving = true;
             ReviverGesture = "POINT";
+            DownedHpMessageInterval = 5f;
+            ReviveProgressMessageInterval = 2f;
 
             MessageKnocked = new Message(
                 "If knocked down, wait for a teammate to revive you | ถ้าล้มให้รอเพื่อนชุบชีวิต", "white");
