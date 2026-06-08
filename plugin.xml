@@ -17,5 +17,6 @@
   </Target>
   <Commands>
     <Command name="knockdownreload" aliases="kdreload" permission="knockdown.reload">Reload configuration</Command>
+    <Command name="knockdown" aliases="kd" permission="knockdown.optout">Enable/disable the knockdown system for yourself (on|off|status)</Command>
   </Commands>
 </Plugin>

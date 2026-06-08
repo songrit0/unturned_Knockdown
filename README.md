@@ -38,6 +38,7 @@ Full steps are in [Installation](#installation) below. Players install nothing �
 | `Knockdown.cs` | Main plugin: damage interception, downed state, timer, revive channel, cleanup |
 | `KnockdownConfiguration.cs` | Config model (auto-serialized by RocketMod) |
 | `CommandKnockdownReload.cs` | `/knockdownreload` admin command |
+| `CommandKnockdown.cs` | `/knockdown on\|off\|status` — players opt themselves in/out of the system |
 | `CommandKnockMe.cs` | `/knockme` test command — forces the caller into knockdown |
 | `plugin.xml` | Human-readable metadata manifest |
 | `Knockdown.csproj` | SDK-style build project (needs the .NET SDK; see notes) |
@@ -199,6 +200,16 @@ Auto-generated example with defaults:
   <ReviverGesture>POINT</ReviverGesture>
   <DownedHpMessageInterval>5</DownedHpMessageInterval>
   <ReviveProgressMessageInterval>2</ReviveProgressMessageInterval>
+  <AllowPlayerOptOut>true</AllowPlayerOptOut>
+  <EnableItemRevive>true</EnableItemRevive>
+  <ItemReviveIds>
+    <unsignedShort>15</unsignedShort>   <!-- Medkit -->
+    <unsignedShort>95</unsignedShort>   <!-- Bandage -->
+    <unsignedShort>96</unsignedShort>   <!-- Splint -->
+    <unsignedShort>388</unsignedShort>  <!-- Morphine -->
+    <unsignedShort>394</unsignedShort>  <!-- Dressing -->
+    <unsignedShort>395</unsignedShort>  <!-- Bloodbag -->
+  </ItemReviveIds>
   <MessageKnocked Text="If knocked down, wait for a teammate to revive you" Color="white" />
   <MessageRevived Text="You have been revived" Color="green" />
   <MessageBeingRevived Text="A teammate is reviving you" Color="green" />
@@ -206,6 +217,8 @@ Auto-generated example with defaults:
   <MessageReviveStarted Text="Reviving... stay crouched and close" Color="yellow" />
   <MessageReviveProgress Text="Reviving... {seconds}s left ({percent}%)" Color="yellow" />
   <MessageDownedHp Text="Bleeding out... HP {hp} ({seconds}s left)" Color="red" />
+  <MessageKnockdownDisabled Text="Knockdown disabled for you — you will die normally" Color="yellow" />
+  <MessageKnockdownEnabled Text="Knockdown enabled for you" Color="green" />
 </KnockdownConfiguration>
 ```
 
@@ -226,6 +239,21 @@ Auto-generated example with defaults:
 | `InvincibleWhileDowned` | false | After grace: `true` = stay immune (only HP drain kills); `false` = combat damage can finish them early |
 | `PauseDrainWhileReviving` | true | `true` = HP bleed-out + timer pause while a revive is in progress |
 | `ReviverGesture` | POINT | Gesture the reviver plays while channeling. Any `EPlayerGesture` (`POINT`, `WAVE`, `SALUTE`, `FACEPALM`, …) or `NONE`. |
+| `AllowPlayerOptOut` | true | `true` = players may disable knockdown for themselves with `/knockdown off` (persisted). `false` = force the system on for everyone and disable the command. |
+| `EnableItemRevive` | true | `true` = a nearby player can **instantly** revive a downed teammate by **using (right-click) a medical item** from `ItemReviveIds`. Works alongside the crouch-channel revive. |
+| `ItemReviveIds` | 15, 95, 96, 388, 394, 395 | Item ids that act as instant-revive tools (vanilla Medkit/Bandage/Splint/Morphine/Dressing/Bloodbag). Replace with your server's healing item ids. |
+
+### Item-based instant revive
+
+When `EnableItemRevive = true`, any alive player who **uses** (right-click / consumes) an item whose id is in
+`ItemReviveIds` while standing within `ReviveDistance` of a downed player **instantly revives the closest one** — no
+crouch channel needed. The downed player comes back at **that item's own heal value** (e.g. a Medkit revives to 75 HP,
+a Bandage to 15 HP). The item is consumed normally by the game — that is the cost. If nobody is downed in range, the
+item just heals the user as usual.
+
+> ⚠️ Vanilla blocks consuming a pure-heal item at **full health with no injuries**, so a completely-healthy reviver may
+> be unable to pop a bandage to trigger this. In practice revivers are usually hurt; if not, the crouch-channel revive
+> still works. There is **no team check** (consistent with the crouch revive — anyone can revive anyone in range).
 
 ### One-shot effects
 
@@ -318,6 +346,7 @@ Supported tags include `<color=…>`, `<b>`, `<i>`, `<size=…>`. After editing,
 | Command | Alias | Permission | Description |
 |---------|-------|------------|-------------|
 | `/knockdownreload` | `/kdreload` | `knockdown.reload` | Reload the configuration from disk |
+| `/knockdown on\|off\|status` | `/kd …` | `knockdown.optout` | Player opts their **own** character in/out of the system. `off` = die normally (never get downed); `on` = re-enable; no argument / `status` = show current state. The choice is **persisted across sessions/restarts** in `Knockdown.optout.txt`. Calling `off` while currently downed kills you immediately. Disabled server-wide if `AllowPlayerOptOut = false`. |
 | `/knockme` | `/testknock` | `knockdown.test` | Force yourself into knockdown immediately, bypassing the damage pipeline. Useful for testing the full visual (range ring, sky flare, downed pose, revive flow) without dying. |
 
 Grant in `Rocket/Permissions.config.xml`:
@@ -327,7 +356,13 @@ Grant in `Rocket/Permissions.config.xml`:
 <Permission Cooldown="0">knockdown.test</Permission>
 ```
 
-Admins with `*` already have both.
+Admins with `*` already have all of them. To let **every** player opt themselves out, grant
+`knockdown.optout` to your **default group** (the group every player belongs to):
+
+```xml
+<!-- inside the default <Group> ... <Permissions> in Permissions.config.xml -->
+<Permission Cooldown="0">knockdown.optout</Permission>
+```
 
 ---
 
@@ -345,6 +380,17 @@ When you upgrade to a build that adds new fields, either:
 
 For example: after upgrading to a build that introduced `RangeEffectID` / `KnockFlareEffectID`, an old config that
 doesn't list them will produce `0` values (i.e. ring + flare silently disabled). Add the entries and reload.
+
+> ⚠️ **`AllowPlayerOptOut`** is a `bool`, so a config that predates it deserializes to `false` — silently disabling
+> the `/knockdown` opt-out command. After upgrading, add `<AllowPlayerOptOut>true</AllowPlayerOptOut>` to your existing
+> `Knockdown.configuration.xml` (or delete the file to regenerate it) and reload.
+
+### Per-player opt-out storage
+
+`/knockdown off`/`on` choices are stored separately from the config, in `Knockdown.optout.txt` next to the plugin DLL —
+a plain text file with **one SteamID per line** (`#` comments and blank lines are ignored). This file is **player data**:
+it survives config edits, and deleting/regenerating `Knockdown.configuration.xml` does **not** touch it. Delete
+`Knockdown.optout.txt` to reset everyone back into the system.
 
 ## Implementation notes & known trade-offs
 

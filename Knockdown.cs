@@ -31,6 +31,12 @@ namespace Knockdown
         /// <summary>Active "flare rising into the sky" animations, one queued per knockdown.</summary>
         private readonly List<FlareAnim> _flares = new List<FlareAnim>();
 
+        /// <summary>
+        /// SteamIDs of players who opted out of the knockdown system (they die normally
+        /// instead of being downed). Persisted to Knockdown.optout.xml beside the plugin DLL.
+        /// </summary>
+        private readonly HashSet<ulong> _optedOut = new HashSet<ulong>();
+
         // -----------------------------------------------------------------
         //  Plugin lifecycle
         // -----------------------------------------------------------------
@@ -39,8 +45,21 @@ namespace Knockdown
         {
             Instance = this;
 
+            LoadOptOut();
+
             DamageTool.damagePlayerRequested += OnDamagePlayerRequested;
             U.Events.OnPlayerDisconnected += OnPlayerDisconnected;
+
+            // Item-based instant revive: a nearby player using a configured medical
+            // item revives a downed teammate. The item is consumed by the game itself.
+            // Two ways players use a heal item:
+            //   - onPerformingAid: AIM at the downed player and use it (heal-another). Gives us the exact target.
+            //   - onConsumePerformed: use it on THEMSELVES while standing near the downed player.
+            if (Configuration.Instance.EnableItemRevive)
+            {
+                UseableConsumeable.onPerformingAid += OnPerformingAid;
+                UseableConsumeable.onConsumePerformed += OnConsumePerformed;
+            }
 
             Logger.Log("Knockdown loaded. KnockDuration=" + Configuration.Instance.KnockDuration +
                        "s, ReviveDuration=" + Configuration.Instance.ReviveDuration + "s.");
@@ -50,6 +69,8 @@ namespace Knockdown
         {
             DamageTool.damagePlayerRequested -= OnDamagePlayerRequested;
             U.Events.OnPlayerDisconnected -= OnPlayerDisconnected;
+            UseableConsumeable.onPerformingAid -= OnPerformingAid;
+            UseableConsumeable.onConsumePerformed -= OnConsumePerformed;
 
             // Tear down every active downed state so no event handlers or speed
             // multipliers leak when the plugin reloads.
@@ -101,6 +122,10 @@ namespace Knockdown
                 shouldAllow = IsCombatCause(parameters.cause);
                 return;
             }
+
+            // --- Opted out of the system: never get downed, take damage (incl. lethal) normally. ---
+            if (_optedOut.Contains(id.m_SteamID))
+                return;
 
             // --- Not downed: would this hit kill them? ---
             // Note: this compares raw incoming damage (damage * times) against
@@ -190,7 +215,17 @@ namespace Knockdown
                 player.animator.sendGesture(EPlayerGesture.REST_STOP, true);
         }
 
+        /// <summary>Crouch-channel revive: brings the player back at ReviveHealth.</summary>
         private void Revive(DownedState state)
+        {
+            ReviveInternal(state, Configuration.Instance.ReviveHealth);
+        }
+
+        /// <summary>
+        /// Clears the downed state and stands the player back up at <paramref name="targetHp"/> HP.
+        /// Used by both the crouch-channel revive (ReviveHealth) and the item revive (item heal value).
+        /// </summary>
+        private void ReviveInternal(DownedState state, int targetHp)
         {
             Player player = state.Player?.Player;
             KnockdownConfiguration cfg = Configuration.Instance;
@@ -201,13 +236,104 @@ namespace Knockdown
             if (player == null || player.life == null || player.life.isDead)
                 return;
 
-            // Revived players always come back at exactly ReviveHealth, regardless of
-            // how much HP they had left when revived.
-            player.life.serverModifyHealth(cfg.ReviveHealth - player.life.health);
+            // Revived players come back at exactly targetHp, regardless of how much
+            // HP they had left when revived.
+            byte hp = (byte)Mathf.Clamp(targetHp, 1, 100);
+            player.life.serverModifyHealth(hp - player.life.health);
             player.life.askHeal(0, true, true);
 
             TriggerEffect(cfg.ReviveEffectID, player.transform.position);
             Msg(player, cfg.MessageRevived);
+        }
+
+        /// <summary>
+        /// A player AIMED at a downed teammate and used a medical item (heal-another).
+        /// If the item id is configured, instantly revive that exact target. The item is
+        /// still consumed (we leave shouldAllow = true), which is the cost.
+        /// </summary>
+        private void OnPerformingAid(Player instigator, Player target, ItemConsumeableAsset asset, ref bool shouldAllow)
+        {
+            KnockdownConfiguration cfg = Configuration.Instance;
+            if (!cfg.EnableItemRevive || asset == null || target == null || instigator == null)
+                return;
+            if (target.channel?.owner == null)
+                return;
+
+            // Only act when the AID target is actually a downed player.
+            CSteamID targetId = target.channel.owner.playerID.steamID;
+            if (!_downed.TryGetValue(targetId, out DownedState state))
+                return;
+
+            // A downed player cannot be the reviver.
+            if (instigator.channel?.owner != null && _downed.ContainsKey(instigator.channel.owner.playerID.steamID))
+                return;
+
+            bool listed = cfg.ItemReviveIds != null && cfg.ItemReviveIds.Contains(asset.id);
+            // Diagnostic: tells you the exact id of the item used on a downed player, so you
+            // can add a Workshop heal item's id to ItemReviveIds if it isn't there yet.
+            Logger.Log("Knockdown: AID used on a downed player with item id=" + asset.id +
+                       (listed ? " -> REVIVE" : " -> NOT in ItemReviveIds (add this id to enable)"));
+
+            if (!listed)
+                return;
+
+            int hp = asset.health > 0 ? asset.health : cfg.ReviveHealth;
+            ReviveInternal(state, hp);
+            if (instigator.channel?.owner != null)
+                Msg(instigator, cfg.MessageItemRevive);
+            // shouldAllow stays true: let the game consume the item as the revive cost.
+        }
+
+        /// <summary>
+        /// A player used a configured medical item ON THEMSELVES while standing near a downed
+        /// player: instantly revive the closest downed player within ReviveDistance, to the
+        /// item's own heal value. The item was already consumed by the game (the cost).
+        /// </summary>
+        private void OnConsumePerformed(Player instigatingPlayer, ItemConsumeableAsset consumeableAsset)
+        {
+            KnockdownConfiguration cfg = Configuration.Instance;
+            if (!cfg.EnableItemRevive || consumeableAsset == null || instigatingPlayer == null)
+                return;
+            if (instigatingPlayer.channel?.owner == null)
+                return;
+
+            // A downed player cannot revive anyone (and is blocked from using items anyway).
+            CSteamID reviverId = instigatingPlayer.channel.owner.playerID.steamID;
+            if (_downed.ContainsKey(reviverId))
+                return;
+
+            // Find the closest downed player within revive range of the item user.
+            Vector3 pos = instigatingPlayer.transform.position;
+            float bestSqr = cfg.ReviveDistance * cfg.ReviveDistance;
+            DownedState best = null;
+            foreach (DownedState s in _downed.Values)
+            {
+                Player p = s.Player?.Player;
+                if (p == null || p.life == null || p.life.isDead)
+                    continue;
+                float d = (p.transform.position - pos).sqrMagnitude;
+                if (d <= bestSqr)
+                {
+                    bestSqr = d;
+                    best = s;
+                }
+            }
+
+            // Nobody downed in range: the item just healed the user normally.
+            if (best == null)
+                return;
+
+            bool listed = cfg.ItemReviveIds != null && cfg.ItemReviveIds.Contains(consumeableAsset.id);
+            Logger.Log("Knockdown: item used near a downed player, id=" + consumeableAsset.id +
+                       (listed ? " -> REVIVE" : " -> NOT in ItemReviveIds (add this id to enable)"));
+
+            if (!listed)
+                return;
+
+            // Revive to the item's heal value; items with no heal fall back to ReviveHealth.
+            int hp = consumeableAsset.health > 0 ? consumeableAsset.health : cfg.ReviveHealth;
+            ReviveInternal(best, hp);
+            Msg(instigatingPlayer, cfg.MessageItemRevive);
         }
 
         /// <summary>Knock timer expired - kill the player normally, crediting the original attacker.</summary>
@@ -530,6 +656,91 @@ namespace Knockdown
             }
             // Any downed players whose claimed reviver just left are revalidated
             // automatically on the next FixedUpdate (getPlayer returns null).
+        }
+
+        // -----------------------------------------------------------------
+        //  Per-player opt-out (enable/disable the system for yourself)
+        // -----------------------------------------------------------------
+
+        /// <summary>True if the player has opted their character out of the knockdown system.</summary>
+        public bool IsOptedOut(CSteamID id)
+        {
+            return _optedOut.Contains(id.m_SteamID);
+        }
+
+        /// <summary>
+        /// Records a player's opt-out preference and persists it. When opting OUT while the
+        /// player is currently downed, they are killed immediately (they can't keep crawling
+        /// under a system they just disabled). Returns true if the stored set actually changed.
+        /// </summary>
+        public bool SetOptOut(CSteamID id, bool optOut)
+        {
+            bool changed = optOut ? _optedOut.Add(id.m_SteamID) : _optedOut.Remove(id.m_SteamID);
+
+            // Disabling mid-knockdown: finish them off rather than leave them downed.
+            if (optOut && _downed.TryGetValue(id, out DownedState state))
+                KillDowned(state);
+
+            if (changed)
+                SaveOptOut();
+
+            return changed;
+        }
+
+        /// <summary>Absolute path of the opt-out store, next to the plugin DLL / its config.</summary>
+        private static string OptOutFilePath
+        {
+            get
+            {
+                string dir = System.IO.Path.GetDirectoryName(
+                    System.Reflection.Assembly.GetExecutingAssembly().Location);
+                return System.IO.Path.Combine(dir, "Knockdown.optout.txt");
+            }
+        }
+
+        // The store is a plain text file (one SteamID per line) rather than XML on purpose:
+        // using XmlSerializer here makes the CLR probe for a non-existent
+        // "Knockdown.XmlSerializers" assembly, which RocketMod logs as a noisy
+        // "could not find dependency" line on every load/save.
+
+        private void LoadOptOut()
+        {
+            _optedOut.Clear();
+            try
+            {
+                string path = OptOutFilePath;
+                if (!System.IO.File.Exists(path))
+                    return;
+
+                foreach (string line in System.IO.File.ReadAllLines(path))
+                {
+                    string trimmed = line.Trim();
+                    if (trimmed.Length == 0 || trimmed[0] == '#')
+                        continue; // allow blank lines and # comments
+                    if (ulong.TryParse(trimmed, out ulong sid))
+                        _optedOut.Add(sid);
+                }
+                Logger.Log("Knockdown: loaded " + _optedOut.Count + " opted-out player(s).");
+            }
+            catch (System.Exception ex)
+            {
+                Logger.LogWarning("Knockdown: failed to load opt-out list: " + ex.Message);
+            }
+        }
+
+        private void SaveOptOut()
+        {
+            try
+            {
+                List<string> lines = new List<string>(_optedOut.Count);
+                foreach (ulong sid in _optedOut)
+                    lines.Add(sid.ToString());
+                System.IO.File.WriteAllLines(OptOutFilePath, lines);
+            }
+            catch (System.Exception ex)
+            {
+                Logger.LogWarning("Knockdown: failed to save opt-out list: " + ex.Message);
+            }
         }
 
         // -----------------------------------------------------------------

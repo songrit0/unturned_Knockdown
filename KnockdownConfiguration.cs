@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Xml.Serialization;
 using Rocket.API;
 
@@ -176,6 +177,30 @@ namespace Knockdown
         /// </summary>
         public float ReviveProgressMessageInterval;
 
+        /// <summary>
+        /// If true, players may opt their own character out of the knockdown system with
+        /// "/knockdown off" (persisted across sessions). Set false to force the system on
+        /// for everyone and disable the command. Default: true.
+        /// </summary>
+        public bool AllowPlayerOptOut;
+
+        // --- Item-based instant revive ------------------------------------
+        /// <summary>
+        /// If true, a nearby player can INSTANTLY revive a downed teammate by using
+        /// (right-click) a medical item whose id is in ItemReviveIds. The item is
+        /// consumed normally (that is the cost), and the downed player is revived to
+        /// the item's own heal value. The crouch-channel revive still works alongside this.
+        /// </summary>
+        public bool EnableItemRevive;
+
+        /// <summary>
+        /// Item ids that act as instant-revive tools when used near a downed player.
+        /// Defaults to the vanilla medical items; replace with your server's ids.
+        /// (Vanilla: 15 Medkit, 95 Bandage, 96 Splint, 388 Morphine, 394 Dressing, 395 Bloodbag.)
+        /// The reviver must be within ReviveDistance of the downed player when they use the item.
+        /// </summary>
+        public List<ushort> ItemReviveIds;
+
         // --- Player-facing messages (Text + Color attributes) ---
         public Message MessageKnocked;
         public Message MessageRevived;
@@ -194,6 +219,15 @@ namespace Knockdown
         /// Placeholders: {hp} = current health, {seconds} = seconds left before death.
         /// </summary>
         public Message MessageDownedHp;
+
+        /// <summary>Shown when a player turns the knockdown system OFF for themselves (/knockdown off).</summary>
+        public Message MessageKnockdownDisabled;
+
+        /// <summary>Shown when a player turns the knockdown system back ON for themselves (/knockdown on).</summary>
+        public Message MessageKnockdownEnabled;
+
+        /// <summary>Shown to a player who instantly revived a downed teammate by using a medical item.</summary>
+        public Message MessageItemRevive;
 
         public void LoadDefaults()
         {
@@ -228,6 +262,12 @@ namespace Knockdown
             ReviverGesture = "POINT";
             DownedHpMessageInterval = 5f;
             ReviveProgressMessageInterval = 2f;
+            AllowPlayerOptOut = true;
+
+            EnableItemRevive = true;
+            // Vanilla medical items + this server's Workshop revive syringe (19000 Mdical_Syringe).
+            // Replace with your server's healing item ids.
+            ItemReviveIds = new List<ushort> { 15, 95, 96, 388, 394, 395, 19000 };
 
             MessageKnocked = new Message(
                 "If knocked down, wait for a teammate to revive you | ถ้าล้มให้รอเพื่อนชุบชีวิต", "white");
@@ -243,6 +283,12 @@ namespace Knockdown
                 "Reviving... {seconds}s left ({percent}%) | กำลังชุบ... เหลือ {seconds} วิ ({percent}%)", "yellow");
             MessageDownedHp = new Message(
                 "Bleeding out... HP {hp} ({seconds}s left) | เลือดไหล... HP {hp} (เหลือ {seconds} วิ)", "red");
+            MessageKnockdownDisabled = new Message(
+                "Knockdown disabled for you — you will die normally | ปิดระบบล้มแล้ว คุณจะตายปกติ", "yellow");
+            MessageKnockdownEnabled = new Message(
+                "Knockdown enabled for you | เปิดระบบล้มแล้ว", "green");
+            MessageItemRevive = new Message(
+                "You revived a teammate with a medical item | คุณชุบเพื่อนด้วยไอเทมรักษา", "green");
         }
     }
 }
