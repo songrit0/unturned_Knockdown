@@ -37,6 +37,11 @@
       <HintPath>$(UnturnedManaged)\com.rlabrecque.steamworks.net.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- Needed for the ITransportConnection overloads of EffectManager.sendUIEffect (revive HUD). -->
+    <Reference Include="SDG.NetTransport">
+      <HintPath>$(UnturnedManaged)\SDG.NetTransport.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
 
     <!-- RocketMod -->
     <Reference Include="Rocket.API">
@@ -49,6 +54,12 @@
     </Reference>
     <Reference Include="Rocket.Unturned">
       <HintPath>$(RocketDir)\Rocket.Unturned.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Harmony: prefix RocketCommandManager.Execute to block commands while downed. -->
+    <Reference Include="0Harmony">
+      <HintPath>$(MSBuildProjectDirectory)\lib\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

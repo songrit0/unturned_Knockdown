@@ -1,0 +1,11 @@
+// Master bundle manifest for the Knockdown revive HUD.
+// Place at the ROOT of the mod content folder, next to the built knockdownui.masterbundle
+// (+ _linux / _mac variants) and the ReviveUI/ subfolder.
+//
+//   Asset_Bundle_Name  -> the built bundle filename (matches the Unity AssetBundle tag)
+//   Asset_Prefix       -> Unity assets root; .dat subfolders mirror Unity subfolders 1:1
+//   Asset_Bundle_Version 5 = Unity 2021 LTS (use the version Unturned ships with)
+
+Asset_Bundle_Name knockdownui.masterbundle
+Asset_Prefix Assets/KnockdownUI
+Asset_Bundle_Version 5
