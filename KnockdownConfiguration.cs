@@ -251,6 +251,23 @@ namespace Knockdown
         /// <summary>Hint shown to a nearby standing teammate within ReviveDistance (how to revive).</summary>
         public string ReviveHintReviver;
 
+        // --- Instant cuff-status toast (third UI EffectAsset) ------------------
+        /// <summary>
+        /// Effect asset id of the instant cuff-status toast (root prefab "Effect", Text child
+        /// "Cuff"). Shown briefly to BOTH the cuffer ("CUFFING X") and the cuffed target
+        /// ("BEING CUFFED BY X") the moment /cuff (or the cuff item) lands. 0 = disabled.
+        /// </summary>
+        public ushort CuffEffectID;
+
+        /// <summary>Toast text shown to the player doing the cuffing. Placeholder: {name}.</summary>
+        public string CuffMessageCuffer;
+
+        /// <summary>Toast text shown to the player being cuffed. Placeholder: {name}.</summary>
+        public string CuffMessageTarget;
+
+        /// <summary>Seconds the cuff toast stays on screen before auto-clearing. Default: 2.5.</summary>
+        public float CuffToastDuration;
+
         // --- Player-facing messages (Text + Color attributes) ---
         public Message MessageKnocked;
         public Message MessageRevived;
@@ -412,6 +429,11 @@ namespace Knockdown
             ReviveHintEffectID = 0;     // set to your published Hint effect id (e.g. 30022)
             ReviveHintDowned = "You're DOWN - wait for a teammate to crouch beside you | คุณล้ม! รอเพื่อนมาย่อข้างๆ เพื่อกู้ชีพ";
             ReviveHintReviver = "CROUCH next to your teammate to revive | ย่อข้างเพื่อนที่ล้มเพื่อกู้ชีพ";
+
+            CuffEffectID = 0;   // set to your published Cuff toast effect id (e.g. 30026)
+            CuffMessageCuffer = "CUFFING {name} | กำลังมัดมือ {name}";
+            CuffMessageTarget = "BEING CUFFED BY {name} | กำลังถูกมัดมือโดย {name}";
+            CuffToastDuration = 2.5f;
 
             EnableItemRevive = true;
             // Vanilla medical items + this server's Workshop revive syringe (19000 Mdical_Syringe).

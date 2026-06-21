@@ -46,11 +46,15 @@ namespace KnockdownEditor
         private const string KillfeedPrefabPath = KillfeedDir + "/Effect.prefab";
         private const int KillfeedLines = 5;   // MUST be >= KillfeedMaxLines in the plugin config
 
+        // Fourth effect: instant cuff-status toast (folder Cuff/ -> Cuff.dat, ID 30026).
+        private const string CuffDir = PrefabDir + "/Cuff";
+        private const string CuffPrefabPath = CuffDir + "/Effect.prefab";
+
         // Number of fill segments in the progress bar. MUST match ReviveBarSegments in Knockdown.cs.
         private const int ReviveBarSegments = 30;
 
         private static readonly Color PanelColor = new Color(0.07f, 0.08f, 0.10f, 0.85f);
-        private static readonly Color TitleColor = new Color(0.55f, 0.95f, 0.60f, 1f); // soft green
+        private static readonly Color TitleColor = new Color(0.80f, 0.80f, 0.82f, 1f); // flat light gray, no green
         private static readonly Color BarColor = Color.white;
 
         [MenuItem("Knockdown UI/Generate Revive HUD Prefab")]
@@ -69,30 +73,39 @@ namespace KnockdownEditor
             scaler.referenceResolution = new Vector2(1920, 1080);
             scaler.matchWidthOrHeight = 0.5f;
 
-            // Small rounded panel anchored to the BOTTOM-CENTER, lifted above the vanilla hotbar.
-            const float PanelW = 540f, PanelH = 96f;
-            var panel = NewImage("Panel", root.transform, PanelColor);
-            panel.sprite = MakeRoundedSprite(22);   // rounded corners (9-sliced)
-            panel.type = Image.Type.Sliced;
-            panel.pixelsPerUnitMultiplier = 1f;
-            BottomCenter(panel.rectTransform, PanelW, PanelH, yFromBottom: 150f);
+            // Three separate flat boxes in a row: STATUS | BAR | TIME (reference-image style:
+            // near-black flat boxes, light-gray uppercase text, no green).
+            const float BoxH = 64f, StatusW = 230f, BarW = 250f, TimeW = 90f, Gap = 8f;
+            float rowW = StatusW + BarW + TimeW + Gap * 2f;
 
-            var title = NewText("Title", panel.transform, "REVIVING", 20, FontStyle.Bold, TextAnchor.MiddleCenter);
+            var row = new GameObject("Row", typeof(RectTransform));
+            row.transform.SetParent(root.transform, false);
+            BottomCenter((RectTransform)row.transform, rowW, BoxH, yFromBottom: 150f);
+            var hlg = row.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = Gap;
+            hlg.childAlignment = TextAnchor.MiddleCenter;
+            hlg.childControlWidth = true; hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = false; hlg.childForceExpandHeight = true;
+
+            var statusBox = NewFlatBox("StatusBox", row.transform, StatusW);
+            var title = NewText("Title", statusBox.transform, "STATUS", 18, FontStyle.Bold, TextAnchor.MiddleCenter);
             title.color = TitleColor;
             title.horizontalOverflow = HorizontalWrapMode.Wrap; // bilingual title shrinks/wraps to fit
             title.verticalOverflow = VerticalWrapMode.Truncate;
-            title.resizeTextForBestFit = true; title.resizeTextMinSize = 8; title.resizeTextMaxSize = 22; // auto-shrink so the bilingual line never overflows
-            Anchor(title.rectTransform, 0.04f, 0.50f, 0.96f, 0.97f);
+            title.resizeTextForBestFit = true; title.resizeTextMinSize = 8; title.resizeTextMaxSize = 20;
+            Anchor(title.rectTransform, 0.06f, 0.08f, 0.94f, 0.92f);
 
-            // Graphical fill bar: a dark rounded track + N green segments the server reveals one by
+            var barBox = NewFlatBox("BarBox", row.transform, BarW);
+
+            // Graphical fill bar: a dark rounded track + N gray segments the server reveals one by
             // one via UI visibility (Unturned has no fill-amount API). Child name "Bar" = % text.
-            var track = NewImage("BarTrack", panel.transform, new Color(0.10f, 0.17f, 0.09f, 1f));
-            track.sprite = MakeRoundedSprite(10);
+            var track = NewImage("BarTrack", barBox.transform, new Color(0.03f, 0.03f, 0.035f, 1f));
+            track.sprite = MakeRoundedSprite(8);
             track.type = Image.Type.Sliced;
             track.pixelsPerUnitMultiplier = 1f;
-            Anchor(track.rectTransform, 0.06f, 0.14f, 0.94f, 0.46f);
+            Anchor(track.rectTransform, 0.08f, 0.18f, 0.92f, 0.50f);
 
-            var fillColor = new Color(0.46f, 0.86f, 0.22f, 1f);
+            var fillColor = new Color(0.55f, 0.55f, 0.58f, 1f); // gray, not green
             const float fpad = 0.012f;
             for (int i = 0; i < ReviveBarSegments; i++)
             {
@@ -104,9 +117,14 @@ namespace KnockdownEditor
             }
 
             // Percent text centered over the bar (child name MUST stay "Bar").
-            var bar = NewText("Bar", panel.transform, "0%", 16, FontStyle.Bold, TextAnchor.MiddleCenter);
-            bar.color = Color.white;
-            Anchor(bar.rectTransform, 0.06f, 0.14f, 0.94f, 0.46f);
+            var bar = NewText("Bar", barBox.transform, "0%", 16, FontStyle.Bold, TextAnchor.MiddleCenter);
+            bar.color = TitleColor;
+            Anchor(bar.rectTransform, 0.08f, 0.55f, 0.92f, 0.92f);
+
+            var timeBox = NewFlatBox("TimeBox", row.transform, TimeW);
+            var time = NewText("Time", timeBox.transform, "0S", 18, FontStyle.Bold, TextAnchor.MiddleCenter);
+            time.color = TitleColor;
+            Anchor(time.rectTransform, 0.06f, 0.08f, 0.94f, 0.92f);
 
             // ---- save prefab + tag bundle ------------------------------------
             var prefab = PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
@@ -120,11 +138,25 @@ namespace KnockdownEditor
 
             BuildHintPrefab();     // second effect: the revive instruction hint
             BuildKillfeedPrefab(); // third effect: the top-right killfeed
+            BuildCuffPrefab();     // fourth effect: instant cuff-status toast
 
             AssetDatabase.SaveAssets();
-            Debug.Log($"[Knockdown] Revive HUD + Hint + Killfeed prefabs generated and tagged bundle '{BundleName}'. " +
+            Debug.Log($"[Knockdown] Revive HUD + Hint + Killfeed + Cuff prefabs generated and tagged bundle '{BundleName}'. " +
                       "Build the master bundle, then set ReviveUIEffectID=30020, ReviveHintEffectID=30022, " +
-                      "KillfeedEffectID=30024 in Knockdown.configuration.xml.");
+                      "KillfeedEffectID=30024, CuffEffectID=30026 in Knockdown.configuration.xml.");
+        }
+
+        // One flat near-black box used by the revive row (Status/Bar/Time) — small rounded corners,
+        // no border accent. Width is fixed via LayoutElement; height stretches to the row (HLG).
+        private static GameObject NewFlatBox(string name, Transform parent, float width)
+        {
+            var img = NewImage(name, parent, PanelColor);
+            img.sprite = MakeRoundedSprite(8);
+            img.type = Image.Type.Sliced;
+            img.pixelsPerUnitMultiplier = 1f;
+            var le = img.gameObject.AddComponent<LayoutElement>();
+            le.preferredWidth = width;
+            return img.gameObject;
         }
 
         // Cause categories (MUST match Knockdown.cs). Each has an icon Icons/<cat>.png; the server
@@ -256,7 +288,7 @@ namespace KnockdownEditor
             panel.sprite = MakeRoundedSprite(24);
             panel.type = Image.Type.Sliced;
             panel.pixelsPerUnitMultiplier = 1f;
-            BottomCenter(panel.rectTransform, PanelW, PanelH, yFromBottom: 235f); // sits above the progress HUD
+            BottomCenter(panel.rectTransform, PanelW, PanelH, yFromBottom: 106f); // sits above the progress HUD
 
             // Icon row (TOP half): Stand --> Crouch  (the action the rescuer must perform)
             var standImg = NewImage("IconStand", panel.transform, new Color(0.75f, 0.78f, 0.82f, 1f));
@@ -283,6 +315,43 @@ namespace KnockdownEditor
             var prefab = PrefabUtility.SaveAsPrefabAsset(root, HintPrefabPath);
             Object.DestroyImmediate(root);
             var importer = AssetImporter.GetAtPath(HintPrefabPath);
+            importer.assetBundleName = BundleName;
+            importer.SaveAndReimport();
+            EditorUtility.SetDirty(prefab);
+        }
+
+        // Instant cuff-status banner: shown to the cuffer ("CUFFING X") and the target
+        // ("BEING CUFFED BY X") the moment /cuff (or the cuff item) lands. Single flat box,
+        // single text child "Cuff" — the server clears it itself after a short duration.
+        private static void BuildCuffPrefab()
+        {
+            if (!Directory.Exists(CuffDir)) Directory.CreateDirectory(CuffDir);
+
+            var root = new GameObject("Effect",
+                typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler));
+            root.GetComponent<Canvas>().renderMode = RenderMode.ScreenSpaceOverlay;
+            var scaler = root.GetComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920, 1080);
+            scaler.matchWidthOrHeight = 0.5f;
+
+            const float PanelW = 520f, PanelH = 70f;
+            var panel = NewImage("Panel", root.transform, PanelColor);
+            panel.sprite = MakeRoundedSprite(10);
+            panel.type = Image.Type.Sliced;
+            panel.pixelsPerUnitMultiplier = 1f;
+            BottomCenter(panel.rectTransform, PanelW, PanelH, yFromBottom: 320f); // sits above the hint + revive boxes
+
+            var cuff = NewText("Cuff", panel.transform, "CUFFING", 20, FontStyle.Bold, TextAnchor.MiddleCenter);
+            cuff.color = TitleColor;
+            cuff.horizontalOverflow = HorizontalWrapMode.Wrap;
+            cuff.verticalOverflow = VerticalWrapMode.Truncate;
+            cuff.resizeTextForBestFit = true; cuff.resizeTextMinSize = 8; cuff.resizeTextMaxSize = 22;
+            Anchor(cuff.rectTransform, 0.05f, 0.08f, 0.95f, 0.92f);
+
+            var prefab = PrefabUtility.SaveAsPrefabAsset(root, CuffPrefabPath);
+            Object.DestroyImmediate(root);
+            var importer = AssetImporter.GetAtPath(CuffPrefabPath);
             importer.assetBundleName = BundleName;
             importer.SaveAndReimport();
             EditorUtility.SetDirty(prefab);
@@ -415,24 +484,43 @@ namespace KnockdownEditor
             return dx * dx + dy * dy <= (float)r * r;
         }
 
+        private static Font _font;
         private static Font GetFont()
         {
-            // Primary font for this server: TKCultureThin (drop into Assets/KnockdownUI/Fonts/
-            // and into the master bundle). Falls back to the builtin Arial if absent.
-            string tkPath = PrefabDir + "/Fonts/TKCultureThin.ttf";
-            if (File.Exists(tkPath))
+            if (_font != null) return _font;
+            // Match the GameMenu phone: English/numbers in Pixelify Sans, Thai glyphs fall back to
+            // 2005_iannnnnAMD. Both live in Assets/KnockdownUI/Fonts and ride in THIS bundle.
+            string fontDir = PrefabDir + "/Fonts";
+            string enPath = fontDir + "/PixelifySans-VariableFont_wght.ttf";
+            string thPath = fontDir + "/2005_iannnnnAMD.ttf";
+            Font en = File.Exists(enPath) ? AssetDatabase.LoadAssetAtPath<Font>(enPath) : null;
+            if (en != null)
             {
-                Font tk = AssetDatabase.LoadAssetAtPath<Font>(tkPath);
-                if (tk != null) return tk;
+                Font th = File.Exists(thPath) ? AssetDatabase.LoadAssetAtPath<Font>(thPath) : null;
+                if (th != null)
+                {
+                    try { var ti = AssetImporter.GetAtPath(thPath); if (ti != null && ti.assetBundleName != BundleName) { ti.assetBundleName = BundleName; ti.SaveAndReimport(); } } catch { }
+                    try {
+                        var imp = AssetImporter.GetAtPath(enPath) as TrueTypeFontImporter;
+                        if (imp != null) {
+                            var so = new SerializedObject(imp);
+                            var prop = so.FindProperty("m_FallbackFontReferences") ?? so.FindProperty("fallbackFontReferences");
+                            if (prop != null) { prop.ClearArray(); prop.arraySize = 1; prop.GetArrayElementAtIndex(0).objectReferenceValue = th; so.ApplyModifiedProperties(); imp.SaveAndReimport(); }
+                        }
+                    } catch { }
+                    en = AssetDatabase.LoadAssetAtPath<Font>(enPath);
+                }
+                return _font = en;
             }
-            // Unity renamed the builtin font in 2022.2: Arial.ttf -> LegacyRuntime.ttf.
+            string tkPath = fontDir + "/TKCultureThin.ttf";
+            if (File.Exists(tkPath)) { Font tk = AssetDatabase.LoadAssetAtPath<Font>(tkPath); if (tk != null) return _font = tk; }
 #if UNITY_2022_2_OR_NEWER
             Font f = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
 #else
             Font f = Resources.GetBuiltinResource<Font>("Arial.ttf");
 #endif
             if (f == null) f = Font.CreateDynamicFontFromOSFont("Arial", 14);
-            return f;
+            return _font = f;
         }
     }
 }

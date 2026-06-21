@@ -59,6 +59,60 @@ namespace Knockdown
             return inst != null && inst._downed.ContainsKey(id);
         }
 
+        /// <summary>True while the player is handcuffed/arrested (captorID set). A cuffed player may
+        /// already be back on their feet (cuff-on-revive), so this is checked alongside IsDowned to
+        /// stop them escaping via /home etc. while restrained.</summary>
+        public static bool IsCuffed(Player player)
+        {
+            return player?.animator != null && player.animator.captorID != CSteamID.Nil;
+        }
+
+        /// <summary>
+        /// Raycast from <paramref name="cuffer"/>'s aim; if it hits a DOWNED player within
+        /// <paramref name="reach"/> metres, put them in the bound/arrest state. Shared by the
+        /// cuff-item Harmony patch and the /cuff command. Returns true if someone was cuffed.
+        /// </summary>
+        public static bool TryCuffAimed(Player cuffer, float reach)
+        {
+            if (cuffer?.look?.aim == null || cuffer.channel?.owner == null)
+                return false;
+            Transform aim = cuffer.look.aim;
+            RaycastInfo info = DamageTool.raycast(new Ray(aim.position, aim.forward), reach, RayMasks.DAMAGE_SERVER, cuffer);
+            Player target = info.player;
+            if (target?.channel?.owner == null || target.animator == null)
+                return false;
+            if (!IsDowned(target.channel.owner.playerID.steamID))
+                return false;
+            if (target.animator.gesture == EPlayerGesture.ARREST_START)
+                return false; // already cuffed
+
+            target.animator.captorID = cuffer.channel.owner.playerID.steamID;
+            target.animator.captorItem = cuffer.equipment.itemID;
+            ItemArrestStartAsset cuffAsset = cuffer.equipment.asset as ItemArrestStartAsset;
+            target.animator.captorStrength = cuffAsset != null ? cuffAsset.strength : (ushort)100;
+            target.animator.sendGesture(EPlayerGesture.ARREST_START, true);
+            Instance?.ShowCuffToast(cuffer, target);
+            return true;
+        }
+
+        /// <summary>Releases the bound/arrest state on a player the <paramref name="releaser"/> is aiming at.</summary>
+        public static bool TryUncuffAimed(Player releaser, float reach)
+        {
+            if (releaser?.look?.aim == null)
+                return false;
+            Transform aim = releaser.look.aim;
+            RaycastInfo info = DamageTool.raycast(new Ray(aim.position, aim.forward), reach, RayMasks.DAMAGE_SERVER, releaser);
+            Player target = info.player;
+            if (target?.animator == null || target.animator.captorID == CSteamID.Nil)
+                return false;
+            target.animator.captorID = CSteamID.Nil;
+            target.animator.sendGesture(EPlayerGesture.ARREST_STOP, true);
+            Instance?.ClearCuffToast(target.channel.owner != null ? target.channel.owner.playerID.steamID : CSteamID.Nil);
+            if (releaser.channel?.owner != null)
+                Instance?.ClearCuffToast(releaser.channel.owner.playerID.steamID);
+            return true;
+        }
+
         /// <summary>Tell a player their command was blocked because they're downed.</summary>
         internal static void TellNoCommandWhileDowned(Player player)
         {
@@ -354,22 +408,38 @@ namespace Knockdown
             if (player.movement != null)
                 player.movement.sendPluginSpeedMultiplier(1f);
 
-            // If we forced the sitting/rest pose, stand the player back up.
-            if (player.animator != null && IsSitPose(Configuration.Instance.DownedPose))
-                player.animator.sendGesture(EPlayerGesture.REST_STOP, true);
+            // Clear whatever downed gesture we set so the revived player isn't stuck in it.
+            if (player.animator != null)
+            {
+                string downedPose = Configuration.Instance.DownedPose;
+                if (IsSitPose(downedPose))
+                    player.animator.sendGesture(EPlayerGesture.REST_STOP, true);
+                else if (IsSurrenderPose(downedPose))
+                    player.animator.sendGesture(EPlayerGesture.SURRENDER_STOP, true);
+            }
+
+            // If they were cuffed while downed (plugin-side cuff, see CuffDownedPlayerPatch),
+            // release the bound state on revive/death so a revived player isn't stuck arrested.
+            if (player.animator != null && player.animator.captorID != CSteamID.Nil)
+            {
+                player.animator.captorID = CSteamID.Nil;
+                player.animator.sendGesture(EPlayerGesture.ARREST_STOP, true);
+            }
         }
 
         /// <summary>Crouch-channel revive: brings the player back at ReviveHealth.</summary>
-        private void Revive(DownedState state)
+        private void Revive(DownedState state, Player reviver)
         {
-            ReviveInternal(state, Configuration.Instance.ReviveHealth);
+            ReviveInternal(state, Configuration.Instance.ReviveHealth, reviver);
         }
 
         /// <summary>
         /// Clears the downed state and stands the player back up at <paramref name="targetHp"/> HP.
         /// Used by both the crouch-channel revive (ReviveHealth) and the item revive (item heal value).
+        /// <paramref name="reviver"/> is who performed the revive (null if unknown) - used to leave the
+        /// revived player handcuffed when a non-team reviver revives while holding a cuff item.
         /// </summary>
-        private void ReviveInternal(DownedState state, int targetHp)
+        private void ReviveInternal(DownedState state, int targetHp, Player reviver)
         {
             Player player = state.Player?.Player;
             KnockdownConfiguration cfg = Configuration.Instance;
@@ -400,6 +470,36 @@ namespace Knockdown
 
             TriggerEffect(cfg.ReviveEffectID, player.transform.position);
             Msg(player, cfg.MessageRevived);
+
+            // If a NON-team reviver revived them while holding a cuff item, leave them handcuffed.
+            TryCuffOnRevive(player, reviver);
+        }
+
+        // Item ids a reviver can hold to leave a non-team revive target handcuffed (ARREST).
+        // ponytail: two fixed ids as the user specified; make it a config list if more are needed.
+        private static readonly ushort[] CuffReviveItems = { 6031, 6029 };
+
+        /// <summary>
+        /// After a revive, if <paramref name="reviver"/> is on a DIFFERENT group than the revived
+        /// player and is holding a cuff item (<see cref="CuffReviveItems"/>), put the revived player
+        /// in the bound/arrest state (same mechanism as /cuff). Teammates and bare-handed revives free.
+        /// </summary>
+        private static void TryCuffOnRevive(Player revived, Player reviver)
+        {
+            if (revived?.animator == null || reviver?.equipment == null) return;
+            if (reviver.channel?.owner == null || revived.channel?.owner == null) return;
+
+            ushort held = reviver.equipment.itemID;
+            if (held != CuffReviveItems[0] && held != CuffReviveItems[1]) return;
+
+            // Same non-nil group = teammates -> revive them free.
+            CSteamID rg = reviver.quests.groupID;
+            if (rg != CSteamID.Nil && rg == revived.quests.groupID) return;
+
+            revived.animator.captorID = reviver.channel.owner.playerID.steamID;
+            revived.animator.captorItem = held;
+            revived.animator.captorStrength = 100;
+            revived.animator.sendGesture(EPlayerGesture.ARREST_START, true);
         }
 
         /// <summary>
@@ -434,7 +534,7 @@ namespace Knockdown
                 return;
 
             int hp = asset.health > 0 ? asset.health : cfg.ReviveHealth;
-            ReviveInternal(state, hp);
+            ReviveInternal(state, hp, instigator);
             if (instigator.channel?.owner != null)
                 Msg(instigator, cfg.MessageItemRevive);
             // shouldAllow stays true: let the game consume the item as the revive cost.
@@ -488,7 +588,7 @@ namespace Knockdown
 
             // Revive to the item's heal value; items with no heal fall back to ReviveHealth.
             int hp = consumeableAsset.health > 0 ? consumeableAsset.health : cfg.ReviveHealth;
-            ReviveInternal(best, hp);
+            ReviveInternal(best, hp, instigatingPlayer);
             Msg(instigatingPlayer, cfg.MessageItemRevive);
         }
 
@@ -514,7 +614,11 @@ namespace Knockdown
             ApplyPose(player, cfg);
         }
 
-        /// <summary>Best-effort downed pose: SIT (rest gesture), CROUCH or PRONE.</summary>
+        /// <summary>
+        /// Best-effort downed pose: SIT (rest gesture), CROUCH, PRONE, or SURRENDER (crouch + hands-up).
+        /// CROUCH/PRONE/SURRENDER only "stick" because <see cref="ForceDownedStancePatch"/> re-asserts
+        /// the stance every tick (a one-off checkStance is reverted by PlayerStance.simulate).
+        /// </summary>
         private static void ApplyPose(Player player, KnockdownConfiguration cfg)
         {
             string pose = (cfg.DownedPose ?? "SIT").Trim().ToUpperInvariant();
@@ -529,11 +633,26 @@ namespace Knockdown
                     if (player.stance != null)
                         player.stance.checkStance(EPlayerStance.CROUCH);
                     break;
+                case "SURRENDER":
+                case "ARREST":
+                    // Crouch down AND raise hands. Stance is forced each tick by ForceDownedStancePatch;
+                    // the surrender gesture is an upper-body animation that coexists with the crouch.
+                    if (player.stance != null)
+                        player.stance.checkStance(EPlayerStance.CROUCH);
+                    if (player.animator != null)
+                        player.animator.sendGesture(EPlayerGesture.SURRENDER_START, true);
+                    break;
                 default: // PRONE
                     if (player.stance != null)
                         player.stance.checkStance(EPlayerStance.PRONE);
                     break;
             }
+        }
+
+        private static bool IsSurrenderPose(string pose)
+        {
+            string p = (pose ?? "SIT").Trim().ToUpperInvariant();
+            return p == "SURRENDER" || p == "ARREST";
         }
 
         private static bool IsSitPose(string pose)
@@ -557,6 +676,7 @@ namespace Knockdown
             TickUIDemos(dt, cfg);
             TickHints(dt, cfg);
             TickKillfeed(dt);
+            TickCuffToasts(dt);
 
             // Decay loot boxes dropped by downed logouts (independent of live downed players).
             if (_deathBoxes != null)
@@ -578,6 +698,20 @@ namespace Knockdown
                     Teardown(state);
                     _downed.Remove(state.Id);
                     continue;
+                }
+
+                // Re-assert the downed stance every tick. The surrender gesture (hands-up) snaps the
+                // player back to STAND whenever they stop moving, so forcing the input alone only held
+                // the crouch while walking - re-applying the stance here wins back the idle frames too.
+                // ponytail: checkStance no-ops when already in that stance, so this is cheap; if it
+                // visibly flickers, the engine is stand-locking surrender and crouch+handsup can't coexist.
+                if (player.stance != null)
+                {
+                    string downedPose = (cfg.DownedPose ?? "SIT").Trim().ToUpperInvariant();
+                    if (downedPose == "CROUCH" || downedPose == "SURRENDER" || downedPose == "ARREST")
+                        player.stance.checkStance(EPlayerStance.CROUCH);
+                    else if (downedPose == "PRONE")
+                        player.stance.checkStance(EPlayerStance.PRONE);
                 }
 
                 // Tick a pending "revive cancelled" HUD flash, then clear it.
@@ -700,7 +834,7 @@ namespace Knockdown
                     {
                         RevealBar(state.Id, state.UIBarFill, 0); // drain the bar
                         state.UIBarFill = 0;
-                        UpdateReviveUI(state.Id, cfg.ReviveUITitleCancelled, "");
+                        UpdateReviveUI(state.Id, cfg.ReviveUITitleCancelled, "", "");
                         state.UICancelFlash = 1.5f;
                     }
                     state.UIReviverId = CSteamID.Nil;
@@ -718,7 +852,7 @@ namespace Knockdown
                         state.ReviverId = client.playerID.steamID;
                         state.ReviveProgress = 0f;
                         state.ProgressTickAccumulator = 0f;
-                    state.ProgressMessageAccumulator = 0f;
+                        state.ProgressMessageAccumulator = 0f;
                         reviver = candidate;
                         Msg(reviver, cfg.MessageReviveStarted);
                         Msg(target, cfg.MessageBeingRevived);
@@ -731,8 +865,8 @@ namespace Knockdown
                         state.UIBarFill = 0;
                         ShowReviveUI(state.ReviverId);
                         ShowReviveUI(state.Id);
-                        UpdateReviveUI(state.ReviverId, cfg.ReviveUITitleReviver, Pct(0f, cfg.ReviveDuration));
-                        UpdateReviveUI(state.Id, cfg.ReviveUITitleDowned, Pct(0f, cfg.ReviveDuration));
+                        UpdateReviveUI(state.ReviverId, cfg.ReviveUITitleReviver, Pct(0f, cfg.ReviveDuration), TimeLeft(0f, cfg.ReviveDuration));
+                        UpdateReviveUI(state.Id, cfg.ReviveUITitleDowned, Pct(0f, cfg.ReviveDuration), TimeLeft(0f, cfg.ReviveDuration));
                         break;
                     }
                 }
@@ -744,7 +878,7 @@ namespace Knockdown
             state.ReviveProgress += dt;
             if (state.ReviveProgress >= cfg.ReviveDuration)
             {
-                Revive(state); // -> Teardown clears the HUD for both
+                Revive(state, reviver); // -> Teardown clears the HUD for both
                 return;
             }
 
@@ -763,8 +897,9 @@ namespace Knockdown
                         state.UIBarFill = newFill;
                     }
                     string pct = Pct(state.ReviveProgress, cfg.ReviveDuration);
-                    UpdateRevivePercent(state.ReviverId, pct);
-                    UpdateRevivePercent(state.Id, pct);
+                    string timeLeft = TimeLeft(state.ReviveProgress, cfg.ReviveDuration);
+                    UpdateRevivePercent(state.ReviverId, pct, timeLeft);
+                    UpdateRevivePercent(state.Id, pct, timeLeft);
                 }
             }
 
@@ -1144,7 +1279,7 @@ namespace Knockdown
                 return;
             }
             string k = RichEscape(CharName(killer));
-            AddKillfeed("<color=#EBB94A><b>" + k + "</b></color>  <color=#9aa1ad>downed</color>  <color=#EBB94A>" + v + "</color>" + DistanceTag(killer, victim), "downed");
+            AddKillfeed("<color=#5BC95B><b>" + k + "</b></color>  <color=#9aa1ad>downed ></color>  <color=#EF6A6A>" + v + "</color>" + DistanceTag(killer, victim), "downed");
         }
 
         private void KillfeedKill(CSteamID killer, CSteamID victim, EDeathCause cause)
@@ -1159,7 +1294,7 @@ namespace Knockdown
                 return;
             }
             string k = RichEscape(CharName(killer));
-            AddKillfeed("<color=#EF6A6A><b>" + k + "</b></color>  <color=#EF6A6A>" + v + "</color>" + DistanceTag(killer, victim), CauseCategory(cause));
+            AddKillfeed("<color=#5BC95B><b>" + k + "</b></color>  <color=#9aa1ad>></color>  <color=#EF6A6A>" + v + "</color>" + DistanceTag(killer, victim), CauseCategory(cause));
         }
 
         // A real, resolvable player (so non-player killers like zombies fall back to a cause line).
@@ -1178,9 +1313,9 @@ namespace Knockdown
             string cat = KillfeedCats[_demoIdx % KillfeedCats.Length];
             _demoIdx++;
             if (cat == "downed")
-                AddKillfeed("<color=#EBB94A><b>" + name + "</b></color>  <color=#9aa1ad>downed</color>  <color=#EBB94A>Target</color>  <color=#6b7280>12m</color>", "downed");
+                AddKillfeed("<color=#5BC95B><b>" + name + "</b></color>  <color=#9aa1ad>downed ></color>  <color=#EF6A6A>Target</color>  <color=#6b7280>12m</color>", "downed");
             else
-                AddKillfeed("<color=#EF6A6A><b>" + name + "</b></color>  <color=#EF6A6A>Target</color>  <color=#6b7280>" + (8 + _demoIdx * 4) + "m</color>  <color=#9aa1ad>" + cat + "</color>", cat);
+                AddKillfeed("<color=#5BC95B><b>" + name + "</b></color>  <color=#9aa1ad>></color>  <color=#EF6A6A>Target</color>  <color=#6b7280>" + (8 + _demoIdx * 4) + "m</color>  <color=#9aa1ad>" + cat + "</color>", cat);
         }
 
         // " 14m" between killer and victim (empty if either position is unavailable).
@@ -1528,14 +1663,15 @@ namespace Knockdown
                 EffectManager.sendUIEffect(id, ReviveUIKey, tc, true);
         }
 
-        /// <summary>Update the HUD's Title + Bar text for one player.</summary>
-        private void UpdateReviveUI(CSteamID who, string title, string bar)
+        /// <summary>Update the HUD's Title + Bar + Time text for one player.</summary>
+        private void UpdateReviveUI(CSteamID who, string title, string bar, string time = "")
         {
             if (Configuration.Instance.ReviveUIEffectID == 0) return;
             ITransportConnection tc = Tc(who);
             if (tc == null) return;
             EffectManager.sendUIEffectText(ReviveUIKey, tc, true, "Title", title);
             EffectManager.sendUIEffectText(ReviveUIKey, tc, true, "Bar", bar);
+            EffectManager.sendUIEffectText(ReviveUIKey, tc, true, "Time", time);
         }
 
         /// <summary>Remove the revive HUD from a player.</summary>
@@ -1555,12 +1691,18 @@ namespace Knockdown
             return Mathf.Clamp(Mathf.RoundToInt(frac * ReviveBarSegments), 0, ReviveBarSegments);
         }
 
-        /// <summary>The "45%  4s" label shown over the bar.</summary>
+        /// <summary>The "45%" label shown in the Bar box.</summary>
         private static string Pct(float progress, float duration)
         {
             float frac = duration > 0f ? Mathf.Clamp01(progress / duration) : 0f;
+            return Mathf.RoundToInt(frac * 100f) + "%";
+        }
+
+        /// <summary>The "4S" label shown in the Time box.</summary>
+        private static string TimeLeft(float progress, float duration)
+        {
             int secsLeft = Mathf.CeilToInt(Mathf.Max(0f, duration - progress));
-            return Mathf.RoundToInt(frac * 100f) + "%  " + secsLeft + "s";
+            return secsLeft + "S";
         }
 
         /// <summary>Reveal/hide the bar's green segments for a player as the fill count changes.</summary>
@@ -1577,13 +1719,14 @@ namespace Knockdown
                     EffectManager.sendUIEffectVisibility(ReviveUIKey, tc, true, "Fill_" + i, false);
         }
 
-        /// <summary>Updates only the "Bar" percent label (cheaper than resending the title each tick).</summary>
-        private void UpdateRevivePercent(CSteamID who, string text)
+        /// <summary>Updates only the "Bar" + "Time" labels (cheaper than resending the title each tick).</summary>
+        private void UpdateRevivePercent(CSteamID who, string bar, string time)
         {
             if (Configuration.Instance.ReviveUIEffectID == 0) return;
             ITransportConnection tc = Tc(who);
-            if (tc != null)
-                EffectManager.sendUIEffectText(ReviveUIKey, tc, true, "Bar", text);
+            if (tc == null) return;
+            EffectManager.sendUIEffectText(ReviveUIKey, tc, true, "Bar", bar);
+            EffectManager.sendUIEffectText(ReviveUIKey, tc, true, "Time", time);
         }
 
         /// <summary>
@@ -1599,7 +1742,7 @@ namespace Knockdown
             CSteamID id = player.channel.owner.playerID.steamID;
             _uiDemos.RemoveAll(d => d.Id == id); // restart if already previewing
             ShowReviveUI(id);
-            UpdateReviveUI(id, "REVIVE HUD TEST", Pct(0f, Configuration.Instance.ReviveDuration));
+            UpdateReviveUI(id, "REVIVE HUD TEST", Pct(0f, Configuration.Instance.ReviveDuration), TimeLeft(0f, Configuration.Instance.ReviveDuration));
             _uiDemos.Add(new UIDemo { Id = id, Elapsed = 0f, Accum = 0f, BarFill = 0 });
             return true;
         }
@@ -1620,7 +1763,7 @@ namespace Knockdown
                     float p = Mathf.Min(d.Elapsed, cfg.ReviveDuration);
                     int newFill = FillCount(p, cfg.ReviveDuration);
                     if (newFill != d.BarFill) { RevealBar(d.Id, d.BarFill, newFill); d.BarFill = newFill; }
-                    UpdateRevivePercent(d.Id, Pct(p, cfg.ReviveDuration));
+                    UpdateRevivePercent(d.Id, Pct(p, cfg.ReviveDuration), TimeLeft(p, cfg.ReviveDuration));
                 }
                 if (done)
                 {
@@ -1659,6 +1802,80 @@ namespace Knockdown
             ITransportConnection tc = Tc(who);
             if (tc != null)
                 EffectManager.askEffectClearByID(id, tc);
+        }
+
+        // -----------------------------------------------------------------
+        //  Cuff status toast (instant banner, third UI EffectAsset)
+        // -----------------------------------------------------------------
+        private const short CuffUIKey = 30027;
+
+        /// <summary>Active cuff toasts, auto-cleared after CuffToastDuration (ticked in FixedUpdate).</summary>
+        private readonly List<CuffToast> _cuffToasts = new List<CuffToast>();
+
+        /// <summary>
+        /// Show "CUFFING X" to <paramref name="cuffer"/> and "BEING CUFFED BY X" to
+        /// <paramref name="target"/>; both auto-clear after CuffToastDuration seconds.
+        /// </summary>
+        internal void ShowCuffToast(Player cuffer, Player target)
+        {
+            ushort id = Configuration.Instance.CuffEffectID;
+            if (id == 0 || cuffer?.channel?.owner == null || target?.channel?.owner == null) return;
+
+            string cufferName = cuffer.channel.owner.playerID.playerName;
+            string targetName = target.channel.owner.playerID.playerName;
+            CSteamID cufferId = cuffer.channel.owner.playerID.steamID;
+            CSteamID targetId = target.channel.owner.playerID.steamID;
+
+            SendCuffToast(cufferId, Configuration.Instance.CuffMessageCuffer.Replace("{name}", targetName));
+            SendCuffToast(targetId, Configuration.Instance.CuffMessageTarget.Replace("{name}", cufferName));
+
+            float dur = Configuration.Instance.CuffToastDuration > 0f ? Configuration.Instance.CuffToastDuration : 2.5f;
+            _cuffToasts.RemoveAll(t => t.Id == cufferId || t.Id == targetId); // restart if already shown
+            _cuffToasts.Add(new CuffToast { Id = cufferId, Remaining = dur });
+            _cuffToasts.Add(new CuffToast { Id = targetId, Remaining = dur });
+        }
+
+        private void SendCuffToast(CSteamID who, string text)
+        {
+            ushort id = Configuration.Instance.CuffEffectID;
+            ITransportConnection tc = Tc(who);
+            if (tc == null) return;
+            EffectManager.sendUIEffect(id, CuffUIKey, tc, true);
+            EffectManager.sendUIEffectText(CuffUIKey, tc, true, "Cuff", text);
+        }
+
+        /// <summary>Clear a player's cuff toast immediately (called on /uncuff).</summary>
+        internal void ClearCuffToast(CSteamID who)
+        {
+            ushort id = Configuration.Instance.CuffEffectID;
+            if (id == 0 || who == CSteamID.Nil) return;
+            ITransportConnection tc = Tc(who);
+            if (tc != null)
+                EffectManager.askEffectClearByID(id, tc);
+            _cuffToasts.RemoveAll(t => t.Id == who);
+        }
+
+        private void TickCuffToasts(float dt)
+        {
+            for (int i = _cuffToasts.Count - 1; i >= 0; i--)
+                _cuffToasts[i].Remaining -= dt;
+
+            // Clear() removes from _cuffToasts internally; snapshot expired ids first so the
+            // removal doesn't shift indices out from under this loop.
+            for (int i = _cuffToasts.Count - 1; i >= 0; i--)
+            {
+                if (_cuffToasts[i].Remaining <= 0f)
+                {
+                    CSteamID expired = _cuffToasts[i].Id;
+                    ClearCuffToast(expired);
+                }
+            }
+        }
+
+        private sealed class CuffToast
+        {
+            public CSteamID Id;
+            public float Remaining;
         }
 
         /// <summary>
@@ -1833,8 +2050,8 @@ namespace Knockdown
         }
     }
 
-    // Harmony: block RocketMod command execution (e.g. /home, /kit) for downed players so they
-    // can't escape the downed state. Console + non-downed players pass through untouched.
+    // Harmony: block RocketMod command execution (e.g. /home, /kit) for downed OR cuffed players so
+    // they can't escape the restrained state. Console + free players pass through untouched.
     [HarmonyPatch(typeof(Rocket.Core.Commands.RocketCommandManager), "Execute")]
     internal static class BlockDownedCommandsPatch
     {
@@ -1848,7 +2065,7 @@ namespace Knockdown
                 if (inst != null && !inst.Configuration.Instance.BlockCommandsWhileDowned)
                     return true;
 
-                if (player is UnturnedPlayer up && Knockdown.IsDowned(up.CSteamID))
+                if (player is UnturnedPlayer up && (Knockdown.IsDowned(up.CSteamID) || Knockdown.IsCuffed(up.Player)))
                 {
                     Knockdown.TellNoCommandWhileDowned(up.Player);
                     return false; // skip the original command execution
@@ -1856,6 +2073,64 @@ namespace Knockdown
             }
             catch { /* never break command handling */ }
             return true;
+        }
+    }
+
+    // Harmony: let a player cuff a DOWNED (prone) player with a vanilla handcuff/cable-tie item.
+    // Vanilla cuffs hard-require the target to be playing the SURRENDER gesture, and that gate runs
+    // on the cuffer's CLIENT (a server plugin can't bypass it) - so a lying-down downed player can
+    // never be cuffed the vanilla way. Here we run our own server-side raycast when the cuff item's
+    // primary fires and apply the arrest directly to a downed target, regardless of their gesture.
+    // Standing/surrendering targets are left to vanilla (we return true for them).
+    [HarmonyPatch(typeof(UseableArrestStart), "startPrimary")]
+    internal static class CuffDownedPlayerPatch
+    {
+        // ponytail: fixed 4m reach + DAMAGE_SERVER raycast; make it a config knob only if servers ask.
+        private const float CuffReach = 4f;
+
+        private static bool Prefix(UseableArrestStart __instance)
+        {
+            try
+            {
+                if (!Provider.isServer) return true;
+                Player cuffer = __instance?.player;
+                if (cuffer == null) return true;
+
+                if (Knockdown.TryCuffAimed(cuffer, CuffReach))
+                {
+                    cuffer.equipment.use(); // consume / play the cuff use, same as vanilla on a successful arrest
+                    return false;           // handled - skip the vanilla surrender-gated path
+                }
+            }
+            catch { /* never break the arrest item */ }
+            return true; // not a downed target -> leave standing/surrender cuffing to vanilla
+        }
+    }
+
+    // Harmony: keep downed players in the configured stance. PlayerStance.simulate re-derives the
+    // stance from the player's own input every tick, so a one-off checkStance() snaps back to standing
+    // (that's why prone/crouch "didn't stick"). We override the INPUT here so the game's own simulate
+    // forces them down each tick - which also blocks jumping (you can't jump while prone/crouched).
+    [HarmonyPatch(typeof(PlayerStance), "simulate")]
+    internal static class ForceDownedStancePatch
+    {
+        private static void Prefix(PlayerStance __instance, ref bool inputCrouch, ref bool inputProne, ref bool inputSprint)
+        {
+            try
+            {
+                if (!Provider.isServer) return;
+                Player p = __instance?.player;
+                if (p?.channel?.owner == null) return;
+                if (!Knockdown.IsDowned(p.channel.owner.playerID.steamID)) return;
+
+                Knockdown inst = Knockdown.Instance;
+                string pose = (inst?.Configuration.Instance.DownedPose ?? "SIT").Trim().ToUpperInvariant();
+                inputSprint = false;
+                if (pose == "PRONE") { inputProne = true; inputCrouch = false; }
+                else if (pose == "CROUCH" || pose == "SURRENDER" || pose == "ARREST") { inputCrouch = true; inputProne = false; }
+                // SIT/REST: leave input untouched (the rest gesture is the pose).
+            }
+            catch { /* never break stance simulation */ }
         }
     }
 }
